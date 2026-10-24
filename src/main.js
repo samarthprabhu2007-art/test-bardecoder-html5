@@ -17,6 +17,7 @@ const elements = {
   torch: document.querySelector("#torchButton"),
   cameraToolsHint: document.querySelector("#cameraToolsHint"),
   pausedScanButton: document.querySelector("#pausedScanButton"),
+  barcodeGuide: document.querySelector("#barcodeGuide"),
 };
 
 function createScanner() {
@@ -43,6 +44,12 @@ let pendingZoom = null;
 let zoomApplyTimer = null;
 let zoomApplyInProgress = false;
 let lastZoomApplyAt = 0;
+let guideTrackingId = 0;
+let guideTimer = null;
+const guideCanvas = document.createElement("canvas");
+guideCanvas.width = 320;
+guideCanvas.height = 240;
+const guideContext = guideCanvas.getContext("2d", { willReadFrequently: true });
 
 function setStatus(message, kind = "idle") {
   elements.status.textContent = message;
@@ -54,6 +61,138 @@ function setControls() {
   elements.stop.disabled = (!starting && !running) || stopping || stopRequested;
   elements.camera.disabled = starting || stopping;
   elements.again.hidden = starting || stopping || !hasResult;
+}
+
+function findBarcodePattern(video) {
+  if (!video.videoWidth || !video.videoHeight || !guideContext) return null;
+  const width = guideCanvas.width;
+  const height = guideCanvas.height;
+  guideContext.drawImage(video, 0, 0, width, height);
+  const { data } = guideContext.getImageData(0, 0, width, height);
+  const rowEdges = new Uint16Array(height);
+  const edgeXByRow = Array.from({ length: height }, () => []);
+
+  for (let y = 2; y < height - 2; y += 1) {
+    let previous = (data[(y * width + 1) * 4] * 0.299)
+      + (data[(y * width + 1) * 4 + 1] * 0.587)
+      + (data[(y * width + 1) * 4 + 2] * 0.114);
+    for (let x = 2; x < width - 2; x += 1) {
+      const offset = (y * width + x) * 4;
+      const gray = data[offset] * 0.299 + data[offset + 1] * 0.587 + data[offset + 2] * 0.114;
+      if (Math.abs(gray - previous) > 48) {
+        rowEdges[y] += 1;
+        edgeXByRow[y].push(x);
+      }
+      previous = gray;
+    }
+  }
+
+  let peakRow = -1;
+  let peakScore = 0;
+  for (let y = 4; y < height - 4; y += 1) {
+    const score = rowEdges[y - 2] + rowEdges[y - 1] + rowEdges[y] + rowEdges[y + 1] + rowEdges[y + 2];
+    if (score > peakScore) {
+      peakScore = score;
+      peakRow = y;
+    }
+  }
+  if (peakRow < 0 || peakScore < 75) return null;
+
+  const minRowScore = Math.max(8, Math.floor(peakScore / 5 * 0.42));
+  let top = peakRow;
+  let bottom = peakRow;
+  while (top > 3 && rowEdges[top - 1] >= minRowScore) top -= 1;
+  while (bottom < height - 4 && rowEdges[bottom + 1] >= minRowScore) bottom += 1;
+  if (bottom - top < 4) return null;
+
+  let left = width;
+  let right = 0;
+  let luminanceTotal = 0;
+  let brightPixels = 0;
+  let pixelCount = 0;
+  for (let y = top; y <= bottom; y += 1) {
+    for (const x of edgeXByRow[y]) {
+      left = Math.min(left, x);
+      right = Math.max(right, x);
+    }
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const gray = data[offset] * 0.299 + data[offset + 1] * 0.587 + data[offset + 2] * 0.114;
+      luminanceTotal += gray;
+      if (gray > 170) brightPixels += 1;
+      pixelCount += 1;
+    }
+  }
+
+  const span = right - left;
+  const averageLuminance = luminanceTotal / pixelCount;
+  const brightRatio = brightPixels / pixelCount;
+  if (span < width * 0.22 || span > width * 0.97 || averageLuminance < 92 || brightRatio < 0.12) return null;
+
+  // Add generous quiet-zone padding around the detected bars for the guide.
+  const paddingX = Math.max(8, span * 0.16);
+  const paddingY = Math.max(8, (bottom - top) * 0.55);
+  return {
+    left: Math.max(0, (left - paddingX) / width),
+    top: Math.max(0, (top - paddingY) / height),
+    right: Math.min(1, (right + paddingX) / width),
+    bottom: Math.min(1, (bottom + paddingY) / height),
+  };
+}
+
+function placeBarcodeGuide(video, bounds) {
+  const videoRect = video.getBoundingClientRect();
+  const shellRect = elements.barcodeGuide.parentElement.getBoundingClientRect();
+  const scale = Math.max(videoRect.width / video.videoWidth, videoRect.height / video.videoHeight);
+  const renderedWidth = video.videoWidth * scale;
+  const renderedHeight = video.videoHeight * scale;
+  const cropLeft = (renderedWidth - videoRect.width) / 2;
+  const cropTop = (renderedHeight - videoRect.height) / 2;
+  const left = videoRect.left - shellRect.left + bounds.left * renderedWidth - cropLeft;
+  const top = videoRect.top - shellRect.top + bounds.top * renderedHeight - cropTop;
+  const right = videoRect.left - shellRect.left + bounds.right * renderedWidth - cropLeft;
+  const bottom = videoRect.top - shellRect.top + bounds.bottom * renderedHeight - cropTop;
+
+  elements.barcodeGuide.style.left = `${Math.max(0, left)}px`;
+  elements.barcodeGuide.style.top = `${Math.max(0, top)}px`;
+  elements.barcodeGuide.style.width = `${Math.max(0, Math.min(shellRect.width, right) - Math.max(0, left))}px`;
+  elements.barcodeGuide.style.height = `${Math.max(0, Math.min(shellRect.height, bottom) - Math.max(0, top))}px`;
+  elements.barcodeGuide.classList.add("barcode-guide-detected");
+  elements.barcodeGuide.querySelector("span").textContent = "BARCODE PATTERN";
+}
+
+function stopBarcodeGuideTracking(clear = false) {
+  guideTrackingId += 1;
+  clearTimeout(guideTimer);
+  guideTimer = null;
+  if (clear) {
+    elements.barcodeGuide.hidden = true;
+    elements.barcodeGuide.classList.remove("barcode-guide-detected");
+  }
+}
+
+function startBarcodeGuideTracking() {
+  stopBarcodeGuideTracking(true);
+  const trackingId = guideTrackingId;
+  elements.barcodeGuide.hidden = false;
+  elements.barcodeGuide.style.left = "3%";
+  elements.barcodeGuide.style.top = "34%";
+  elements.barcodeGuide.style.width = "94%";
+  elements.barcodeGuide.style.height = "32%";
+  elements.barcodeGuide.querySelector("span").textContent = "SEARCHING FOR BARCODE";
+  const video = elements.reader.querySelector("video");
+
+  const scanFrame = () => {
+    if (trackingId !== guideTrackingId || !running || !video?.isConnected) return;
+    try {
+      const pattern = findBarcodePattern(video);
+      if (pattern) placeBarcodeGuide(video, pattern);
+    } catch {
+      // Keep the last guide position if a frame is not ready for analysis.
+    }
+    guideTimer = setTimeout(scanFrame, 180);
+  };
+  scanFrame();
 }
 
 function setupCameraTools(activeScanner) {
@@ -191,6 +330,7 @@ async function refreshCameraChoices(activeScanner) {
 }
 
 async function stopCamera(message = "Camera stopped.") {
+  stopBarcodeGuideTracking(true);
   elements.pausedScanButton.hidden = true;
   if (stopPromise) return stopPromise;
   if (starting && !running) {
@@ -272,6 +412,7 @@ async function startCamera() {
         elements.result.textContent = decodedText;
         elements.resultCard.hidden = false;
         try {
+          stopBarcodeGuideTracking();
           activeScanner.pause(true);
           elements.pausedScanButton.hidden = false;
           setControls();
@@ -294,6 +435,7 @@ async function startCamera() {
       refreshCameraChoices(activeScanner),
     ]);
     if (scanner !== activeScanner || !running) return;
+    if (activeScanner.getState() === 2) startBarcodeGuideTracking();
     setupCameraTools(activeScanner);
     if (stopRequested) {
       await stopCamera(pendingStopMessage);
@@ -317,6 +459,7 @@ function scanAgain() {
   if (scanner && scanner.getState() === 3) {
     try {
       scanner.resume();
+      startBarcodeGuideTracking();
       hasResult = false;
       elements.pausedScanButton.hidden = true;
       elements.resultCard.hidden = true;
