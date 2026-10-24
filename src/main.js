@@ -12,10 +12,14 @@ const elements = {
   result: document.querySelector("#resultValue"),
 };
 
-const scanner = new Html5Qrcode("reader", {
-  formatsToSupport: [Html5QrcodeSupportedFormats.CODE_128],
-  verbose: false,
-});
+function createScanner() {
+  return new Html5Qrcode("reader", {
+    formatsToSupport: [Html5QrcodeSupportedFormats.CODE_128],
+    verbose: false,
+  });
+}
+
+let scanner = null;
 let starting = false;
 let running = false;
 let stopping = false;
@@ -23,6 +27,7 @@ let stopRequested = false;
 let hasResult = false;
 let stopPromise = null;
 let pendingStopMessage = "Camera stopped.";
+let sessionId = 0;
 
 function setStatus(message, kind = "idle") {
   elements.status.textContent = message;
@@ -62,16 +67,18 @@ async function stopCamera(message = "Camera stopped.") {
 
   stopRequested = true;
   stopping = true;
-  const shouldStop = running || scanner.getState() === 2 || scanner.getState() === 3;
+  const activeScanner = scanner;
+  const shouldStop = activeScanner && (running || activeScanner.getState() === 2 || activeScanner.getState() === 3);
   running = false;
   setControls();
   stopPromise = (async () => {
     try {
-      if (shouldStop) await scanner.stop();
+      if (shouldStop) await activeScanner.stop();
     } catch (error) {
       // The scan may have ended during a simultaneous camera or page lifecycle event.
       console.debug("Scanner stop cleanup:", error);
     } finally {
+      if (scanner === activeScanner) scanner = null;
       running = false;
       starting = false;
       stopRequested = false;
@@ -93,9 +100,12 @@ async function startCamera() {
   elements.result.textContent = "";
   setControls();
   setStatus("Requesting camera permission…", "scanning");
+  const currentSession = ++sessionId;
+  const activeScanner = createScanner();
+  scanner = activeScanner;
 
   try {
-    await scanner.start(
+    await activeScanner.start(
       { facingMode: "environment" },
       {
         fps: 10,
@@ -107,13 +117,17 @@ async function startCamera() {
         disableFlip: true,
       },
       async (decodedText) => {
-        if (!running || hasResult) return;
+        if (!running || hasResult || scanner !== activeScanner || sessionId !== currentSession) return;
         hasResult = true;
         elements.result.textContent = decodedText;
         elements.resultCard.hidden = false;
-        await stopCamera(null);
-        setStatus("Code 128 detected. Camera stopped.", "success");
-        window.alert(`Code 128 detected:\n\n${decodedText}`);
+        setStatus("Code 128 detected. Stopping camera…", "success");
+        window.setTimeout(async () => {
+          await stopCamera(null);
+          if (sessionId !== currentSession) return;
+          setStatus("Code 128 detected. Camera stopped.", "success");
+          window.alert(`Code 128 detected:\n\n${decodedText}`);
+        }, 0);
       },
       () => {
         // No barcode in this frame is normal while scanning.
@@ -130,6 +144,7 @@ async function startCamera() {
   } catch (error) {
     starting = false;
     running = false;
+    if (scanner === activeScanner) scanner = null;
     const wasStopRequested = stopRequested;
     stopRequested = false;
     setControls();
