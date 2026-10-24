@@ -28,7 +28,10 @@ h2 { margin: 0; font-size: clamp(17px, 4vw, 22px); }
 #reader video { display: block; width: 100%; max-height: min(62vh, 570px); object-fit: cover; }
 #reader canvas { max-width: 100%; }
 #reader__scan_region { min-height: 270px; }
-#qr-shaded-region { border: 3px solid #43e477 !important; border-radius: 14px !important; box-shadow: 0 0 20px #43e47766; }
+#qr-shaded-region { pointer-events: none; }
+#qr-shaded-region > div { background-color: #a3e635 !important; border-radius: 2px; box-shadow: 0 0 10px #a3e63588; }
+#qr-shaded-region::after { position: absolute; top: 50%; left: 5%; right: 5%; height: 2px; content: ""; background: linear-gradient(90deg, transparent, #a3e635 12%, #d9ff68 50%, #a3e635 88%, transparent); box-shadow: 0 0 12px #a3e635; animation: scan-beam 1.8s ease-in-out infinite alternate; }
+@keyframes scan-beam { from { transform: translateY(-25px); } to { transform: translateY(25px); } }
 #reader__dashboard, #reader__header_message, #reader__status_span { color: #b9c7dd !important; }
 #reader__dashboard_section_csr button, #reader__dashboard_section_swaplink { color: #b9c7dd !important; }
 #reader select, #reader button { border-radius: 8px !important; }
