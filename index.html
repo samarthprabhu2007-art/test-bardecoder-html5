@@ -27,14 +27,6 @@
           <div id="reader" aria-label="Camera barcode preview"></div>
         </div>
 
-        <div class="camera-picker">
-          <label for="cameraSelect">Camera lens</label>
-          <select id="cameraSelect" aria-label="Choose camera lens">
-            <option value="">Rear camera (automatic)</option>
-          </select>
-          <p>Choose the main or back camera if the automatic camera looks blurry. Focus is requested when the device supports it.</p>
-        </div>
-
         <div id="cameraTools" class="camera-tools" hidden>
           <label class="zoom-control" for="zoomRange">
             <span><span>Zoom</span><output id="zoomValue" for="zoomRange">Unavailable</output></span>
@@ -53,6 +45,14 @@
           <button id="startButton" class="button button-primary" type="button">Start camera</button>
           <button id="stopButton" class="button button-secondary" type="button" disabled>Stop</button>
           <button id="againButton" class="button button-secondary" type="button" hidden>Scan another</button>
+        </div>
+
+        <div class="camera-picker">
+          <label for="cameraSelect">Camera lens</label>
+          <select id="cameraSelect" aria-label="Choose camera lens">
+            <option value="">Rear camera (automatic)</option>
+          </select>
+          <p>Choose the main or back camera if the automatic camera looks blurry. Focus is requested when the device supports it.</p>
         </div>
       </section>
 
