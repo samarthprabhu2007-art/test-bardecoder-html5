@@ -27,6 +27,14 @@
           <div id="reader" aria-label="Camera barcode preview"></div>
         </div>
 
+        <div class="camera-picker">
+          <label for="cameraSelect">Camera lens</label>
+          <select id="cameraSelect" aria-label="Choose camera lens">
+            <option value="">Rear camera (automatic)</option>
+          </select>
+          <p>Choose the main or back camera if the automatic camera looks blurry. Focus is requested when the device supports it.</p>
+        </div>
+
         <div class="status-row">
           <span id="statusDot" class="status-dot" aria-hidden="true"></span>
           <p id="statusText" role="status" aria-live="polite">Camera is off. Press Start camera when ready.</p>

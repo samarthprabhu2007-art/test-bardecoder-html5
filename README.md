@@ -11,7 +11,7 @@ npm run dev
 
 Open the localhost URL printed by Vite. On a phone, camera access requires an HTTPS address; a plain HTTP LAN address does not satisfy the browser's secure-context requirement. Deploy this folder as a separate Vercel project to test from a phone over HTTPS.
 
-Press **Start camera** and allow camera access. A successful read pauses the preview and displays the decoded text in the green panel and a popup. Use **Scan another** to resume the same camera session without reopening camera permission. Press **Stop** to fully release the camera.
+Press **Start camera** and allow camera access. The page requests a rear camera, prefers 1080p when supported, and asks for continuous autofocus when the active camera reports support. Use **Camera lens** to choose another listed device if the automatic rear camera is blurry; hardware names and focus controls vary by phone. A successful read pauses the preview and displays the decoded text in the green panel and a popup. Use **Scan another** to resume the same camera session without reopening camera permission. Press **Stop** to fully release the camera.
 
 ## Notes
 

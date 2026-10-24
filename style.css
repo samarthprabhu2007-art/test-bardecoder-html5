@@ -35,6 +35,12 @@ h2 { margin: 0; font-size: clamp(17px, 4vw, 22px); }
 #reader__dashboard, #reader__header_message, #reader__status_span { color: #b9c7dd !important; }
 #reader__dashboard_section_csr button, #reader__dashboard_section_swaplink { color: #b9c7dd !important; }
 #reader select, #reader button { border-radius: 8px !important; }
+.camera-picker { display: grid; gap: 8px; margin-top: 16px; }
+.camera-picker label { color: #d6e2f5; font-size: 14px; font-weight: 700; }
+.camera-picker select { width: 100%; min-height: 44px; border: 1px solid #304768; border-radius: 9px; padding: 0 12px; background: #101f38; color: #f4f7ff; font: inherit; }
+.camera-picker select:focus-visible { outline: 3px solid #8bb5ff; outline-offset: 2px; }
+.camera-picker select:disabled { opacity: .55; }
+.camera-picker p { margin: 0; color: #8fa2bd; font-size: 12px; line-height: 1.5; }
 .status-row { display: flex; align-items: center; gap: 10px; margin: 18px 0; color: #b8c7df; }
 .status-row p { margin: 0; line-height: 1.5; }
 .status-dot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: #71819a; }

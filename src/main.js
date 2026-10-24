@@ -10,6 +10,7 @@ const elements = {
   again: document.querySelector("#againButton"),
   resultCard: document.querySelector("#resultCard"),
   result: document.querySelector("#resultValue"),
+  camera: document.querySelector("#cameraSelect"),
 };
 
 function createScanner() {
@@ -28,6 +29,7 @@ let hasResult = false;
 let stopPromise = null;
 let pendingStopMessage = "Camera stopped.";
 let sessionId = 0;
+let selectedCameraId = "";
 
 function setStatus(message, kind = "idle") {
   elements.status.textContent = message;
@@ -37,6 +39,7 @@ function setStatus(message, kind = "idle") {
 function setControls() {
   elements.start.disabled = starting || running || stopping;
   elements.stop.disabled = (!starting && !running) || stopping || stopRequested;
+  elements.camera.disabled = starting || stopping;
   elements.again.hidden = starting || stopping || !hasResult;
 }
 
@@ -53,6 +56,53 @@ function cameraErrorMessage(error) {
     return "The camera is busy. Close other apps using the camera and retry.";
   }
   return error?.message || "Could not start the camera. Check camera permission and try again.";
+}
+
+async function applyCameraQuality(activeScanner) {
+  try {
+    const capabilities = activeScanner.getRunningTrackCapabilities();
+    const focusModes = capabilities.focusMode;
+    const supportsContinuousFocus = Array.isArray(focusModes) && focusModes.includes("continuous");
+    await activeScanner.applyVideoConstraints({
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+      ...(supportsContinuousFocus ? { focusMode: { ideal: "continuous" } } : {}),
+    });
+  } catch {
+    // Resolution and focus controls vary by camera; keep the browser's defaults if unsupported.
+  }
+}
+
+async function refreshCameraChoices(activeScanner) {
+  try {
+    // Enumerate after the active stream has permission; Html5Qrcode.getCameras()
+    // opens a second temporary stream, which can steal or disrupt the live camera.
+    const cameras = (await navigator.mediaDevices.enumerateDevices())
+      .filter((device) => device.kind === "videoinput")
+      .map((device) => ({ id: device.deviceId, label: device.label }));
+    const activeDeviceId = activeScanner.getRunningTrackSettings().deviceId;
+    const automatic = document.createElement("option");
+    automatic.value = "";
+    automatic.textContent = "Rear camera (automatic)";
+    elements.camera.replaceChildren(automatic);
+
+    cameras.forEach((camera, index) => {
+      const option = document.createElement("option");
+      option.value = camera.id;
+      option.textContent = camera.label?.trim() || `Camera ${index + 1}`;
+      elements.camera.append(option);
+    });
+
+    if (activeDeviceId && cameras.some((camera) => camera.id === activeDeviceId)) {
+      elements.camera.value = activeDeviceId;
+    } else if (selectedCameraId && cameras.some((camera) => camera.id === selectedCameraId)) {
+      elements.camera.value = selectedCameraId;
+    } else {
+      elements.camera.value = "";
+    }
+  } catch {
+    // Camera selection is an enhancement; automatic rear-camera mode remains available.
+  }
 }
 
 async function stopCamera(message = "Camera stopped.") {
@@ -106,14 +156,13 @@ async function startCamera() {
 
   try {
     await activeScanner.start(
-      { facingMode: "environment" },
+      selectedCameraId || { facingMode: "environment" },
       {
         fps: 10,
         qrbox: (width, height) => ({
           width: Math.max(180, Math.floor(Math.min(width * 0.94, 600))),
           height: Math.max(70, Math.floor(Math.min(height * 0.18, 120))),
         }),
-        aspectRatio: 16 / 9,
         disableFlip: true,
       },
       async (decodedText) => {
@@ -137,6 +186,12 @@ async function startCamera() {
     );
     starting = false;
     running = true;
+    setControls();
+    await Promise.allSettled([
+      applyCameraQuality(activeScanner),
+      refreshCameraChoices(activeScanner),
+    ]);
+    if (scanner !== activeScanner || !running) return;
     if (stopRequested) {
       await stopCamera(pendingStopMessage);
       return;
@@ -172,9 +227,20 @@ function scanAgain() {
   void startCamera();
 }
 
+async function changeCamera() {
+  selectedCameraId = elements.camera.value;
+  if (!running || starting || stopping) return;
+  hasResult = false;
+  elements.resultCard.hidden = true;
+  elements.result.textContent = "";
+  await stopCamera(null);
+  await startCamera();
+}
+
 elements.start.addEventListener("click", () => void startCamera());
 elements.stop.addEventListener("click", () => void stopCamera());
 elements.again.addEventListener("click", scanAgain);
+elements.camera.addEventListener("change", () => void changeCamera());
 window.addEventListener("pagehide", () => void stopCamera(null));
 
 setControls();
