@@ -16,6 +16,7 @@ const elements = {
   zoomValue: document.querySelector("#zoomValue"),
   torch: document.querySelector("#torchButton"),
   cameraToolsHint: document.querySelector("#cameraToolsHint"),
+  pausedScanButton: document.querySelector("#pausedScanButton"),
 };
 
 function createScanner() {
@@ -190,6 +191,7 @@ async function refreshCameraChoices(activeScanner) {
 }
 
 async function stopCamera(message = "Camera stopped.") {
+  elements.pausedScanButton.hidden = true;
   if (stopPromise) return stopPromise;
   if (starting && !running) {
     stopRequested = true;
@@ -241,6 +243,7 @@ async function startCamera() {
   stopRequested = false;
   starting = true;
   hasResult = false;
+  elements.pausedScanButton.hidden = true;
   elements.resultCard.hidden = true;
   elements.result.textContent = "";
   setControls();
@@ -270,6 +273,7 @@ async function startCamera() {
         elements.resultCard.hidden = false;
         try {
           activeScanner.pause(true);
+          elements.pausedScanButton.hidden = false;
           setControls();
           setStatus("Code 128 detected. Camera paused; scan again to resume.", "success");
           window.alert(`Code 128 detected:\n\n${decodedText}`);
@@ -311,11 +315,12 @@ async function startCamera() {
 function scanAgain() {
   if (starting || stopping) return;
   if (scanner && scanner.getState() === 3) {
-    hasResult = false;
-    elements.resultCard.hidden = true;
-    elements.result.textContent = "";
     try {
       scanner.resume();
+      hasResult = false;
+      elements.pausedScanButton.hidden = true;
+      elements.resultCard.hidden = true;
+      elements.result.textContent = "";
       setControls();
       setStatus("Scanning again. Hold the barcode inside the green frame.", "scanning");
     } catch (error) {
@@ -394,6 +399,7 @@ elements.torch.addEventListener("click", async () => {
 elements.start.addEventListener("click", () => void startCamera());
 elements.stop.addEventListener("click", () => void stopCamera());
 elements.again.addEventListener("click", scanAgain);
+elements.pausedScanButton.addEventListener("click", scanAgain);
 elements.camera.addEventListener("change", () => void changeCamera());
 window.addEventListener("pagehide", () => void stopCamera(null));
 

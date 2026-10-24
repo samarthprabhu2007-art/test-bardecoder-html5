@@ -24,6 +24,9 @@ h1 { margin: 0; font-size: clamp(30px, 6vw, 42px); letter-spacing: -.04em; }
 h2 { margin: 0; font-size: clamp(17px, 4vw, 22px); }
 .format-badge { flex: none; border: 1px solid #31513e; border-radius: 999px; padding: 7px 10px; color: #a5f3c1; background: #12321f; font: 700 10px ui-monospace, monospace; letter-spacing: .08em; }
 .scanner-shell { position: relative; overflow: hidden; min-height: 270px; border: 1px solid #263b5f; border-radius: 14px; background: #050912; }
+.paused-scan-button { position: absolute; z-index: 5; top: 50%; left: 50%; min-height: 48px; transform: translate(-50%, -50%); border: 1px solid #9df4b8; border-radius: 12px; padding: 0 20px; color: #07130b; background: #a3e635; box-shadow: 0 8px 28px #0009; font-weight: 800; cursor: pointer; }
+.paused-scan-button:hover { background: #c5ff59; }
+.paused-scan-button:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
 #reader { width: 100%; min-height: 270px; }
 /* Force the injected video element to always be visible and fill the shell.
    html5-qrcode dynamically inserts <video> which can start display:none or
