@@ -38,6 +38,10 @@ let selectedCameraId = "";
 let zoomFeature = null;
 let torchFeature = null;
 let torchEnabled = false;
+let pendingZoom = null;
+let zoomApplyTimer = null;
+let zoomApplyInProgress = false;
+let lastZoomApplyAt = 0;
 
 function setStatus(message, kind = "idle") {
   elements.status.textContent = message;
@@ -52,6 +56,11 @@ function setControls() {
 }
 
 function setupCameraTools(activeScanner) {
+  clearTimeout(zoomApplyTimer);
+  zoomApplyTimer = null;
+  pendingZoom = null;
+  zoomApplyInProgress = false;
+  lastZoomApplyAt = 0;
   elements.cameraTools.hidden = false;
   elements.cameraToolsHint.textContent = "Zoom and flash depend on the selected camera.";
   zoomFeature = null;
@@ -217,6 +226,9 @@ async function stopCamera(message = "Camera stopped.") {
       zoomFeature = null;
       torchFeature = null;
       torchEnabled = false;
+      clearTimeout(zoomApplyTimer);
+      zoomApplyTimer = null;
+      pendingZoom = null;
       setControls();
       if (message) setStatus(message, hasResult ? "success" : "idle");
     }
@@ -324,16 +336,43 @@ async function changeCamera() {
   await startCamera();
 }
 
-elements.zoomRange.addEventListener("input", async () => {
-  if (!zoomFeature) return;
-  const requestedZoom = Number(elements.zoomRange.value);
-  elements.zoomValue.textContent = `${requestedZoom.toFixed(1)}×`;
+function scheduleZoomApply() {
+  if (!zoomFeature || pendingZoom === null || zoomApplyTimer !== null) return;
+  const delay = Math.max(0, 60 - (performance.now() - lastZoomApplyAt));
+  zoomApplyTimer = setTimeout(() => {
+    zoomApplyTimer = null;
+    void applyPendingZoom();
+  }, delay);
+}
+
+async function applyPendingZoom() {
+  if (!zoomFeature || zoomApplyInProgress || pendingZoom === null) return;
+  const activeZoomFeature = zoomFeature;
+  const requestedZoom = pendingZoom;
+  pendingZoom = null;
+  zoomApplyInProgress = true;
+  lastZoomApplyAt = performance.now();
   try {
-    await zoomFeature.apply(requestedZoom);
-    elements.cameraToolsHint.textContent = "Camera zoom updated.";
+    await activeZoomFeature.apply(requestedZoom);
+    if (zoomFeature === activeZoomFeature && pendingZoom === null) {
+      elements.cameraToolsHint.textContent = "Camera zoom updated.";
+    }
   } catch {
-    elements.cameraToolsHint.textContent = "This camera could not apply the selected zoom.";
+    if (zoomFeature === activeZoomFeature && pendingZoom === null) {
+      elements.cameraToolsHint.textContent = "This camera could not apply the selected zoom.";
+    }
+  } finally {
+    zoomApplyInProgress = false;
+    if (pendingZoom !== null) scheduleZoomApply();
   }
+}
+
+elements.zoomRange.addEventListener("input", () => {
+  if (!zoomFeature) return;
+  pendingZoom = Number(elements.zoomRange.value);
+  elements.zoomValue.textContent = `${pendingZoom.toFixed(1)}×`;
+  elements.cameraToolsHint.textContent = "Adjusting camera zoom…";
+  scheduleZoomApply();
 });
 
 elements.torch.addEventListener("click", async () => {
