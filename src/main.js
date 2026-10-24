@@ -61,13 +61,29 @@ function cameraErrorMessage(error) {
 async function applyCameraQuality(activeScanner) {
   try {
     const capabilities = activeScanner.getRunningTrackCapabilities();
-    const focusModes = capabilities.focusMode;
-    const supportsContinuousFocus = Array.isArray(focusModes) && focusModes.includes("continuous");
-    await activeScanner.applyVideoConstraints({
+
+    // Build constraints progressively – only include what the track supports.
+    const constraints = {
       width: { ideal: 1920 },
       height: { ideal: 1080 },
-      ...(supportsContinuousFocus ? { focusMode: { ideal: "continuous" } } : {}),
-    });
+    };
+
+    const focusModes = capabilities.focusMode;
+    if (Array.isArray(focusModes)) {
+      if (focusModes.includes("continuous")) {
+        constraints.focusMode = "continuous";
+      } else if (focusModes.includes("auto")) {
+        constraints.focusMode = "auto";
+      }
+    }
+
+    // Request macro / close-range focus distance when supported (helps Code 128 at card distance).
+    if (capabilities.focusDistance && constraints.focusMode === "continuous") {
+      // Keep continuous but also set a close-range focus hint.
+      constraints.focusDistance = { ideal: 0.15 }; // ~15 cm – typical card-hold distance
+    }
+
+    await activeScanner.applyVideoConstraints(constraints);
   } catch {
     // Resolution and focus controls vary by camera; keep the browser's defaults if unsupported.
   }
@@ -159,11 +175,14 @@ async function startCamera() {
       selectedCameraId || { facingMode: "environment" },
       {
         fps: 10,
+        // Taller scan box so the camera can autofocus on the barcode.
+        // Narrow/flat boxes cause the autofocus to hunt or lock on background.
         qrbox: (width, height) => ({
-          width: Math.max(180, Math.floor(Math.min(width * 0.94, 600))),
-          height: Math.max(70, Math.floor(Math.min(height * 0.18, 120))),
+          width: Math.max(220, Math.floor(Math.min(width * 0.94, 640))),
+          height: Math.max(130, Math.floor(Math.min(height * 0.32, 200))),
         }),
-        disableFlip: true,
+        // Allow flip – disableFlip: true blocks scanning on some Android rear cameras.
+        disableFlip: false,
       },
       async (decodedText) => {
         if (!running || hasResult || activeScanner.getState() !== 2 || scanner !== activeScanner || sessionId !== currentSession) return;

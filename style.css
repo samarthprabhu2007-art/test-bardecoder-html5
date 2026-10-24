@@ -25,7 +25,17 @@ h2 { margin: 0; font-size: clamp(17px, 4vw, 22px); }
 .format-badge { flex: none; border: 1px solid #31513e; border-radius: 999px; padding: 7px 10px; color: #a5f3c1; background: #12321f; font: 700 10px ui-monospace, monospace; letter-spacing: .08em; }
 .scanner-shell { position: relative; overflow: hidden; min-height: 270px; border: 1px solid #263b5f; border-radius: 14px; background: #050912; }
 #reader { width: 100%; min-height: 270px; }
-#reader video { display: block; width: 100%; max-height: min(62vh, 570px); object-fit: cover; }
+/* Force the injected video element to always be visible and fill the shell.
+   html5-qrcode dynamically inserts <video> which can start display:none or
+   have zero dimensions, causing the "black screen" symptom on Chrome. */
+#reader video {
+  display: block !important;
+  width: 100% !important;
+  min-height: 260px;
+  max-height: min(62vh, 570px);
+  object-fit: cover;
+  border-radius: 10px;
+}
 #reader canvas { max-width: 100%; }
 #reader__scan_region { min-height: 270px; }
 #qr-shaded-region { pointer-events: none; }
@@ -64,5 +74,6 @@ h2 { margin: 0; font-size: clamp(17px, 4vw, 22px); }
   .app-shell { width: min(100% - 22px, 760px); padding-top: 30px; }
   .scanner-card, .result-card { padding: 15px; border-radius: 14px; }
   .scanner-shell, #reader, #reader__scan_region { min-height: 230px; }
+  #reader video { min-height: 220px; }
   .button { flex: 1 1 auto; }
 }
