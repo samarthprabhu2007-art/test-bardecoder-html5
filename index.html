@@ -35,6 +35,15 @@
           <p>Choose the main or back camera if the automatic camera looks blurry. Focus is requested when the device supports it.</p>
         </div>
 
+        <div id="cameraTools" class="camera-tools" hidden>
+          <label class="zoom-control" for="zoomRange">
+            <span><span>Zoom</span><output id="zoomValue" for="zoomRange">Unavailable</output></span>
+            <input id="zoomRange" type="range" min="1" max="1" step="0.1" value="1" disabled />
+          </label>
+          <button id="torchButton" class="button button-secondary torch-button" type="button" aria-pressed="false" disabled>Flash unavailable</button>
+          <p id="cameraToolsHint" class="camera-tools-hint">Zoom and flash depend on the selected camera.</p>
+        </div>
+
         <div class="status-row">
           <span id="statusDot" class="status-dot" aria-hidden="true"></span>
           <p id="statusText" role="status" aria-live="polite">Camera is off. Press Start camera when ready.</p>

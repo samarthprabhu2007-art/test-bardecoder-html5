@@ -11,6 +11,11 @@ const elements = {
   resultCard: document.querySelector("#resultCard"),
   result: document.querySelector("#resultValue"),
   camera: document.querySelector("#cameraSelect"),
+  cameraTools: document.querySelector("#cameraTools"),
+  zoomRange: document.querySelector("#zoomRange"),
+  zoomValue: document.querySelector("#zoomValue"),
+  torch: document.querySelector("#torchButton"),
+  cameraToolsHint: document.querySelector("#cameraToolsHint"),
 };
 
 function createScanner() {
@@ -30,6 +35,9 @@ let stopPromise = null;
 let pendingStopMessage = "Camera stopped.";
 let sessionId = 0;
 let selectedCameraId = "";
+let zoomFeature = null;
+let torchFeature = null;
+let torchEnabled = false;
 
 function setStatus(message, kind = "idle") {
   elements.status.textContent = message;
@@ -41,6 +49,57 @@ function setControls() {
   elements.stop.disabled = (!starting && !running) || stopping || stopRequested;
   elements.camera.disabled = starting || stopping;
   elements.again.hidden = starting || stopping || !hasResult;
+}
+
+function setupCameraTools(activeScanner) {
+  elements.cameraTools.hidden = false;
+  elements.cameraToolsHint.textContent = "Zoom and flash depend on the selected camera.";
+  zoomFeature = null;
+  torchFeature = null;
+  torchEnabled = false;
+  elements.torch.setAttribute("aria-pressed", "false");
+  elements.torch.textContent = "Flash unavailable";
+
+  try {
+    const cameraCapabilities = activeScanner.getRunningTrackCameraCapabilities();
+    const trackCapabilities = activeScanner.getRunningTrackCapabilities();
+    const zoom = cameraCapabilities.zoomFeature();
+    if (zoom.isSupported()) {
+      const min = zoom.min();
+      const max = zoom.max();
+      const step = zoom.step();
+      zoomFeature = zoom;
+      elements.zoomRange.min = String(min);
+      elements.zoomRange.max = String(max);
+      elements.zoomRange.step = String(step > 0 ? step : 0.1);
+      const current = zoom.value();
+      elements.zoomRange.value = String(current ?? min);
+      elements.zoomRange.disabled = max <= min;
+      elements.zoomValue.textContent = `${Number(elements.zoomRange.value).toFixed(1)}×`;
+    } else {
+      elements.zoomRange.disabled = true;
+      elements.zoomValue.textContent = "Unavailable";
+    }
+
+    const torch = cameraCapabilities.torchFeature();
+    if (torch.isSupported() && trackCapabilities.torch === true) {
+      torchFeature = torch;
+      torchEnabled = torch.value() === true;
+      elements.torch.disabled = false;
+      elements.torch.textContent = torchEnabled ? "Turn flash off" : "Turn flash on";
+      elements.torch.setAttribute("aria-pressed", String(torchEnabled));
+    } else {
+      elements.torch.disabled = true;
+    }
+
+    if (zoomFeature || torchFeature) {
+      elements.cameraToolsHint.textContent = "Use the slider or flash button if this camera supports it.";
+    }
+  } catch {
+    elements.zoomRange.disabled = true;
+    elements.zoomValue.textContent = "Unavailable";
+    elements.torch.disabled = true;
+  }
 }
 
 function cameraErrorMessage(error) {
@@ -150,6 +209,14 @@ async function stopCamera(message = "Camera stopped.") {
       stopRequested = false;
       stopping = false;
       stopPromise = null;
+      elements.cameraTools.hidden = true;
+      elements.zoomRange.disabled = true;
+      elements.torch.disabled = true;
+      elements.torch.textContent = "Flash unavailable";
+      elements.torch.setAttribute("aria-pressed", "false");
+      zoomFeature = null;
+      torchFeature = null;
+      torchEnabled = false;
       setControls();
       if (message) setStatus(message, hasResult ? "success" : "idle");
     }
@@ -211,6 +278,7 @@ async function startCamera() {
       refreshCameraChoices(activeScanner),
     ]);
     if (scanner !== activeScanner || !running) return;
+    setupCameraTools(activeScanner);
     if (stopRequested) {
       await stopCamera(pendingStopMessage);
       return;
@@ -255,6 +323,34 @@ async function changeCamera() {
   await stopCamera(null);
   await startCamera();
 }
+
+elements.zoomRange.addEventListener("input", async () => {
+  if (!zoomFeature) return;
+  const requestedZoom = Number(elements.zoomRange.value);
+  elements.zoomValue.textContent = `${requestedZoom.toFixed(1)}×`;
+  try {
+    await zoomFeature.apply(requestedZoom);
+    elements.cameraToolsHint.textContent = "Camera zoom updated.";
+  } catch {
+    elements.cameraToolsHint.textContent = "This camera could not apply the selected zoom.";
+  }
+});
+
+elements.torch.addEventListener("click", async () => {
+  if (!torchFeature || elements.torch.disabled) return;
+  elements.torch.disabled = true;
+  try {
+    await torchFeature.apply(!torchEnabled);
+    torchEnabled = !torchEnabled;
+    elements.torch.textContent = torchEnabled ? "Turn flash off" : "Turn flash on";
+    elements.torch.setAttribute("aria-pressed", String(torchEnabled));
+    elements.cameraToolsHint.textContent = torchEnabled ? "Camera flash is on." : "Camera flash is off.";
+  } catch {
+    elements.cameraToolsHint.textContent = "This camera could not change the flash setting.";
+  } finally {
+    elements.torch.disabled = !torchFeature;
+  }
+});
 
 elements.start.addEventListener("click", () => void startCamera());
 elements.stop.addEventListener("click", () => void stopCamera());
