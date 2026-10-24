@@ -18,15 +18,48 @@ const elements = {
   cameraToolsHint: document.querySelector("#cameraToolsHint"),
   pausedScanButton: document.querySelector("#pausedScanButton"),
   barcodeGuide: document.querySelector("#barcodeGuide"),
-  guideModeButton: document.querySelector("#guideModeButton"),
-  guideModeHint: document.querySelector("#guideModeHint"),
 };
 
 function createScanner() {
-  return new Html5Qrcode("reader", {
+  return new Html5Qrcode("decoder", {
     formatsToSupport: [Html5QrcodeSupportedFormats.CODE_128],
     verbose: false,
   });
+}
+
+function createCameraSession() {
+  const decoder = createScanner();
+  return {
+    decoder,
+    stream: null,
+    track: null,
+    video: null,
+    state: 1,
+    getState() { return this.state; },
+    getRunningTrackSettings() { return this.track?.getSettings() || {}; },
+    getRunningTrackCapabilities() { return this.track?.getCapabilities() || {}; },
+    pause() {
+      this.state = 3;
+      this.video?.pause();
+    },
+    resume() {
+      this.state = 2;
+      return this.video?.play();
+    },
+    async stop() {
+      this.state = 1;
+      this.stream?.getTracks().forEach((track) => track.stop());
+      if (this.video) {
+        this.video.pause();
+        this.video.srcObject = null;
+        this.video.remove();
+      }
+      this.stream = null;
+      this.track = null;
+      this.video = null;
+      try { this.decoder.clear(); } catch { /* Decoder host may already be clear. */ }
+    },
+  };
 }
 
 let scanner = null;
@@ -46,20 +79,18 @@ let pendingZoom = null;
 let zoomApplyTimer = null;
 let zoomApplyInProgress = false;
 let lastZoomApplyAt = 0;
+let zoomMin = 1;
+let zoomMax = 1;
+let zoomStep = 0.1;
+let lastAutoZoomAt = 0;
 let guideTrackingId = 0;
 let guideTimer = null;
-let guideMode = "auto";
 let currentGuideBounds = null;
 let guidedScanId = 0;
 let guidedScanTimer = null;
 let guidedScanBusy = false;
-let guidedWorkers = [];
-let guidedJobSequence = 0;
-const guidedZoomFactors = [1, 1.4, 1.8];
-const guidedCanvases = guidedZoomFactors.map(() => {
-  const canvas = document.createElement("canvas");
-  return { canvas, context: canvas.getContext("2d", { willReadFrequently: true }) };
-});
+const guidedCropCanvas = document.createElement("canvas");
+const guidedCropContext = guidedCropCanvas.getContext("2d", { willReadFrequently: true });
 const guideCanvas = document.createElement("canvas");
 guideCanvas.width = 320;
 guideCanvas.height = 240;
@@ -75,18 +106,6 @@ function setControls() {
   elements.stop.disabled = (!starting && !running) || stopping || stopRequested;
   elements.camera.disabled = starting || stopping;
   elements.again.hidden = starting || stopping || !hasResult;
-  elements.guideModeButton.disabled = !running || starting || stopping;
-}
-
-function updateGuideModeControl() {
-  const isFixed = guideMode === "fixed";
-  elements.guideModeButton.textContent = isFixed
-    ? "Guide: Fixed center · tap to auto-follow"
-    : "Guide: Auto-follow · tap to lock center";
-  elements.guideModeButton.setAttribute("aria-pressed", String(isFixed));
-  elements.guideModeHint.textContent = isFixed
-    ? "Guide is locked at center. Guided zoom checks this area while the existing scanner keeps running."
-    : "Auto-follow is on. Guided zoom checks the framed area while the existing center scanner keeps running.";
 }
 
 function findBarcodePattern(video) {
@@ -155,7 +174,8 @@ function findBarcodePattern(video) {
   const brightRatio = brightPixels / pixelCount;
   if (span < width * 0.22 || span > width * 0.97 || averageLuminance < 92 || brightRatio < 0.12) return null;
 
-  // Add generous quiet-zone padding around the detected bars for the guide.
+  // Preserve the previously working quiet-zone padding around detected bars.
+  // Fixed center mode uses CENTER_GUIDE_BOUNDS and is unaffected by this.
   const paddingX = Math.max(8, span * 0.16);
   const paddingY = Math.max(8, (bottom - top) * 0.55);
   return {
@@ -199,6 +219,28 @@ function stopBarcodeGuideTracking(clear = false) {
   }
 }
 
+async function scanCropWithHtml5Qrcode(decoder, imageFile) {
+  // html5-qrcode creates two object URLs for every file scan but only revokes
+  // one of them on the next scan. Revoke URLs for this crop after decoding so
+  // continuous frame scanning does not retain every encoded image in memory.
+  const originalCreateObjectURL = URL.createObjectURL;
+  const cropUrls = [];
+  const trackedCreateObjectURL = function (object) {
+    const url = originalCreateObjectURL.call(URL, object);
+    if (object === imageFile) cropUrls.push(url);
+    return url;
+  };
+  URL.createObjectURL = trackedCreateObjectURL;
+  try {
+    return await decoder.scanFileV2(imageFile, false);
+  } finally {
+    if (URL.createObjectURL === trackedCreateObjectURL) {
+      URL.createObjectURL = originalCreateObjectURL;
+    }
+    cropUrls.forEach((url) => URL.revokeObjectURL(url));
+  }
+}
+
 const CENTER_GUIDE_BOUNDS = { left: 0.03, top: 0.34, right: 0.97, bottom: 0.66 };
 
 function showFixedCenterGuide() {
@@ -208,80 +250,97 @@ function showFixedCenterGuide() {
   placeBarcodeGuide(video, CENTER_GUIDE_BOUNDS, "FIXED CENTER", false);
 }
 
-function startBarcodeGuideTracking() {
-  if (guideMode !== "auto") return;
+function isPatternNearCenter(bounds) {
+  const centerX = (bounds.left + bounds.right) / 2;
+  const centerY = (bounds.top + bounds.bottom) / 2;
+  return centerX >= 0.25 && centerX <= 0.75 && centerY >= 0.34 && centerY <= 0.66;
+}
+
+async function increaseCameraZoom(activeScanner) {
+  if (!zoomFeature || zoomApplyInProgress || pendingZoom !== null
+    || performance.now() - lastAutoZoomAt < 450) return;
+
+  const feature = zoomFeature;
+  const current = Number(activeScanner.track?.getSettings().zoom ?? elements.zoomRange.value ?? zoomMin);
+  if (current >= zoomMax - 0.001) {
+    elements.cameraToolsHint.textContent = "Maximum camera zoom reached; still scanning the center frame.";
+    return;
+  }
+
+  const increment = Math.max(zoomStep, (zoomMax - zoomMin) * 0.05);
+  const nextZoom = Math.min(zoomMax, current + increment);
+  zoomApplyInProgress = true;
+  lastAutoZoomAt = performance.now();
+  try {
+    await feature.apply(nextZoom);
+    if (zoomFeature === feature) {
+      elements.zoomRange.value = String(nextZoom);
+      elements.zoomValue.textContent = `${nextZoom.toFixed(1)}?`;
+      elements.cameraToolsHint.textContent = `Center barcode pattern found. Auto zoom: ${nextZoom.toFixed(1)}?`;
+    }
+  } catch {
+    if (zoomFeature === feature) {
+      elements.cameraToolsHint.textContent = "Automatic zoom is unavailable on this camera; center scanning continues.";
+      zoomFeature = null;
+      elements.zoomRange.disabled = true;
+    }
+  } finally {
+    zoomApplyInProgress = false;
+    if (pendingZoom !== null) scheduleZoomApply();
+  }
+}
+
+function startCenterPatternTracking(activeScanner = scanner) {
   stopBarcodeGuideTracking(true);
   const trackingId = guideTrackingId;
-  elements.barcodeGuide.hidden = false;
-  elements.barcodeGuide.style.left = "3%";
-  elements.barcodeGuide.style.top = "34%";
-  elements.barcodeGuide.style.width = "94%";
-  elements.barcodeGuide.style.height = "32%";
-  elements.barcodeGuide.querySelector("span").textContent = "SEARCHING FOR BARCODE";
   const video = elements.reader.querySelector("video");
+  if (!video) return;
 
+  elements.barcodeGuide.hidden = false;
+  showFixedCenterGuide();
   const scanFrame = () => {
-    if (trackingId !== guideTrackingId || !running || !video?.isConnected) return;
+    if (trackingId !== guideTrackingId || !running || !video?.isConnected
+      || scanner !== activeScanner || activeScanner?.getState() !== 2) return;
     try {
       const pattern = findBarcodePattern(video);
-      if (pattern) placeBarcodeGuide(video, pattern);
+      if (pattern && isPatternNearCenter(pattern)) {
+        void increaseCameraZoom(activeScanner);
+      }
     } catch {
-      // Keep the last guide position if a frame is not ready for analysis.
+      // Keep scanning at the current camera zoom if pattern detection fails.
     }
     guideTimer = setTimeout(scanFrame, 180);
   };
   scanFrame();
 }
 
-function ensureGuidedWorkers() {
-  if (guidedWorkers.length) return guidedWorkers.some((slot) => !slot.failed);
-  if (typeof Worker === "undefined") return false;
-
-  const createdWorkers = [];
+async function resetCameraZoom() {
+  const feature = zoomFeature;
+  if (!feature) return;
+  clearTimeout(zoomApplyTimer);
+  zoomApplyTimer = null;
+  pendingZoom = null;
+  zoomApplyInProgress = true;
   try {
-    for (const _scale of guidedZoomFactors) {
-      const worker = new Worker(new URL("./barcode-zoom-worker.js", import.meta.url), { type: "module" });
-      const slot = { worker, pending: null, failed: false };
-      worker.addEventListener("message", (event) => {
-        if (!slot.pending || event.data.id !== slot.pending.id) return;
-        const { resolve } = slot.pending;
-        slot.pending = null;
-        resolve(event.data.text || null);
-      });
-      worker.addEventListener("error", () => {
-        slot.failed = true;
-        if (slot.pending) {
-          slot.pending.resolve(null);
-          slot.pending = null;
-        }
-      });
-      createdWorkers.push(slot);
+    await feature.apply(zoomMin);
+    if (zoomFeature === feature) {
+      elements.zoomRange.value = String(zoomMin);
+      elements.zoomValue.textContent = `${zoomMin.toFixed(1)}×`;
+      elements.cameraToolsHint.textContent = "Zoom reset. Scanning the center frame.";
     }
-    guidedWorkers = createdWorkers;
-    return true;
   } catch {
-    createdWorkers.forEach(({ worker }) => worker.terminate());
-    guidedWorkers = [];
-    return false;
+    if (zoomFeature === feature) {
+      elements.cameraToolsHint.textContent = "Could not reset camera zoom; center scanning continues.";
+    }
+  } finally {
+    zoomApplyInProgress = false;
+    lastAutoZoomAt = performance.now();
+    if (pendingZoom !== null) scheduleZoomApply();
   }
 }
 
-function sendGuidedVariant(slot, imageData, width, height) {
-  if (slot.failed || slot.pending) return Promise.resolve(null);
-  const id = ++guidedJobSequence;
-  return new Promise((resolve) => {
-    slot.pending = { id, resolve };
-    try {
-      slot.worker.postMessage({ id, width, height, pixels: imageData.data.buffer }, [imageData.data.buffer]);
-    } catch {
-      slot.pending = null;
-      resolve(null);
-    }
-  });
-}
-
-async function decodeGuideAtMultipleScales(video, bounds, activeScanner, activeSession) {
-  if (!ensureGuidedWorkers() || !video.videoWidth || !video.videoHeight) return;
+async function decodeGuideCrop(video, bounds, activeScanner, activeSession) {
+  if (!video.videoWidth || !video.videoHeight || !guidedCropContext) return;
   const sourceLeft = Math.max(0, Math.floor(bounds.left * video.videoWidth));
   const sourceTop = Math.max(0, Math.floor(bounds.top * video.videoHeight));
   const sourceRight = Math.min(video.videoWidth, Math.ceil(bounds.right * video.videoWidth));
@@ -290,29 +349,28 @@ async function decodeGuideAtMultipleScales(video, bounds, activeScanner, activeS
   const sourceHeight = sourceBottom - sourceTop;
   if (sourceWidth < 8 || sourceHeight < 4) return;
 
-  const variants = [];
-  const usedWidths = new Set();
-  for (let index = 0; index < guidedZoomFactors.length; index += 1) {
-    const slot = guidedWorkers[index];
-    const surface = guidedCanvases[index];
-    if (!slot || slot.failed || !surface.context) continue;
-    const outputWidth = Math.min(1920, Math.round(sourceWidth * guidedZoomFactors[index]));
-    if (outputWidth < 1 || usedWidths.has(outputWidth)) continue;
-    usedWidths.add(outputWidth);
-    const outputHeight = Math.max(1, Math.round(sourceHeight * outputWidth / sourceWidth));
-    surface.canvas.width = outputWidth;
-    surface.canvas.height = outputHeight;
-    surface.context.drawImage(video, sourceLeft, sourceTop, sourceWidth, sourceHeight, 0, 0, outputWidth, outputHeight);
-    const imageData = surface.context.getImageData(0, 0, outputWidth, outputHeight);
-    variants.push(sendGuidedVariant(slot, imageData, outputWidth, outputHeight));
-  }
+  if (!running || hasResult || scanner !== activeScanner || sessionId !== activeSession) return;
 
-  await Promise.all(variants.map(async (variant) => {
-    const decodedText = await variant;
-    if (decodedText && running && !hasResult && scanner === activeScanner && sessionId === activeSession) {
-      acceptDecodedText(decodedText, activeScanner, activeSession);
+  // Decode only the fixed center guide crop. Camera zoom is controlled separately
+  // when barcode-like lines are detected near the center.
+  const outputWidth = sourceWidth;
+  const outputHeight = sourceHeight;
+  guidedCropCanvas.width = outputWidth;
+  guidedCropCanvas.height = outputHeight;
+  guidedCropContext.imageSmoothingEnabled = false;
+  guidedCropContext.drawImage(video, sourceLeft, sourceTop, sourceWidth, sourceHeight, 0, 0, outputWidth, outputHeight);
+  const blob = await new Promise((resolve) => guidedCropCanvas.toBlob(resolve, "image/jpeg", 0.92));
+  if (!blob || !running || hasResult || scanner !== activeScanner || sessionId !== activeSession) return;
+
+  try {
+    const imageFile = new File([blob], "center-frame.jpg", { type: "image/jpeg" });
+    const result = await scanCropWithHtml5Qrcode(activeScanner.decoder, imageFile);
+    if (result?.decodedText && running && !hasResult && scanner === activeScanner && sessionId === activeSession) {
+      acceptDecodedText(result.decodedText, activeScanner, activeSession);
     }
-  }));
+  } catch {
+    // No barcode in this crop/zoom level is normal; the next live frame is tried.
+  }
 }
 
 function stopGuidedZoomScanning() {
@@ -321,13 +379,8 @@ function stopGuidedZoomScanning() {
   guidedScanTimer = null;
 }
 
-function disposeGuidedWorkers() {
+function disposeGuideScanLoop() {
   stopGuidedZoomScanning();
-  for (const slot of guidedWorkers) {
-    slot.worker.terminate();
-    slot.pending?.resolve(null);
-  }
-  guidedWorkers = [];
 }
 
 function startGuidedZoomScanning(activeScanner = scanner, activeSession = sessionId) {
@@ -351,9 +404,9 @@ function startGuidedZoomScanning(activeScanner = scanner, activeSession = sessio
 
     guidedScanBusy = true;
     try {
-      await decodeGuideAtMultipleScales(video, { ...currentGuideBounds }, activeScanner, activeSession);
+      await decodeGuideCrop(video, { ...currentGuideBounds }, activeScanner, activeSession);
     } catch {
-      // The original live scanner stays active if a background crop cannot be processed.
+      // Retry with the next frame if the crop cannot be processed.
     } finally {
       guidedScanBusy = false;
     }
@@ -365,25 +418,16 @@ function startGuidedZoomScanning(activeScanner = scanner, activeSession = sessio
   void scanFrame();
 }
 
-function applyGuideMode() {
-  updateGuideModeControl();
-  if (!running) return;
-  if (guideMode === "fixed") {
-    stopBarcodeGuideTracking(true);
-    showFixedCenterGuide();
-  } else {
-    currentGuideBounds = null;
-    startBarcodeGuideTracking();
-  }
-  startGuidedZoomScanning();
-}
-
 function setupCameraTools(activeScanner) {
   clearTimeout(zoomApplyTimer);
   zoomApplyTimer = null;
   pendingZoom = null;
   zoomApplyInProgress = false;
   lastZoomApplyAt = 0;
+  lastAutoZoomAt = 0;
+  zoomMin = 1;
+  zoomMax = 1;
+  zoomStep = 0.1;
   elements.cameraTools.hidden = false;
   elements.cameraToolsHint.textContent = "Zoom and flash depend on the selected camera.";
   zoomFeature = null;
@@ -393,18 +437,25 @@ function setupCameraTools(activeScanner) {
   elements.torch.textContent = "Flash unavailable";
 
   try {
-    const cameraCapabilities = activeScanner.getRunningTrackCameraCapabilities();
     const trackCapabilities = activeScanner.getRunningTrackCapabilities();
-    const zoom = cameraCapabilities.zoomFeature();
-    if (zoom.isSupported()) {
-      const min = zoom.min();
-      const max = zoom.max();
-      const step = zoom.step();
-      zoomFeature = zoom;
+    if (trackCapabilities.zoom) {
+      const zoom = trackCapabilities.zoom;
+      const min = zoom.min ?? 1;
+      const max = zoom.max ?? min;
+      const step = zoom.step ?? 0.1;
+      zoomMin = min;
+      zoomMax = max;
+      zoomStep = step > 0 ? step : 0.1;
+      zoomFeature = {
+        min,
+        max,
+        step: zoomStep,
+        apply: (value) => activeScanner.track.applyConstraints({ advanced: [{ zoom: value }] }),
+      };
       elements.zoomRange.min = String(min);
       elements.zoomRange.max = String(max);
       elements.zoomRange.step = String(step > 0 ? step : 0.1);
-      const current = zoom.value();
+      const current = activeScanner.track.getSettings().zoom;
       elements.zoomRange.value = String(current ?? min);
       elements.zoomRange.disabled = max <= min;
       elements.zoomValue.textContent = `${Number(elements.zoomRange.value).toFixed(1)}×`;
@@ -413,10 +464,9 @@ function setupCameraTools(activeScanner) {
       elements.zoomValue.textContent = "Unavailable";
     }
 
-    const torch = cameraCapabilities.torchFeature();
-    if (torch.isSupported() && trackCapabilities.torch === true) {
-      torchFeature = torch;
-      torchEnabled = torch.value() === true;
+    if (trackCapabilities.torch === true) {
+      torchFeature = { apply: (value) => activeScanner.track.applyConstraints({ advanced: [{ torch: value }] }) };
+      torchEnabled = activeScanner.track.getSettings().torch === true;
       elements.torch.disabled = false;
       elements.torch.textContent = torchEnabled ? "Turn flash off" : "Turn flash on";
       elements.torch.setAttribute("aria-pressed", String(torchEnabled));
@@ -474,7 +524,7 @@ async function applyCameraQuality(activeScanner) {
       constraints.focusDistance = { ideal: 0.15 }; // ~15 cm – typical card-hold distance
     }
 
-    await activeScanner.applyVideoConstraints(constraints);
+    await activeScanner.track.applyConstraints(constraints);
   } catch {
     // Resolution and focus controls vary by camera; keep the browser's defaults if unsupported.
   }
@@ -577,9 +627,7 @@ async function stopCamera(message = "Camera stopped.") {
       clearTimeout(zoomApplyTimer);
       zoomApplyTimer = null;
       pendingZoom = null;
-      guideMode = "auto";
       currentGuideBounds = null;
-      updateGuideModeControl();
       setControls();
       if (message) setStatus(message, hasResult ? "success" : "idle");
     }
@@ -598,30 +646,30 @@ async function startCamera() {
   setControls();
   setStatus("Requesting camera permission…", "scanning");
   const currentSession = ++sessionId;
-  const activeScanner = createScanner();
+  const activeScanner = createCameraSession();
   scanner = activeScanner;
 
   try {
-    await activeScanner.start(
-      selectedCameraId || { facingMode: "environment" },
-      {
-        fps: 10,
-        // Taller scan box so the camera can autofocus on the barcode.
-        // Narrow/flat boxes cause the autofocus to hunt or lock on background.
-        qrbox: (width, height) => ({
-          width: Math.max(220, Math.floor(Math.min(width * 0.94, 640))),
-          height: Math.max(130, Math.floor(Math.min(height * 0.32, 200))),
-        }),
-        // Allow flip – disableFlip: true blocks scanning on some Android rear cameras.
-        disableFlip: false,
-      },
-      async (decodedText) => {
-        acceptDecodedText(decodedText, activeScanner, currentSession);
-      },
-      () => {
-        // No barcode in this frame is normal while scanning.
-      },
-    );
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser does not support camera access.");
+    const videoConstraints = {
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+      ...(selectedCameraId
+        ? { deviceId: { exact: selectedCameraId } }
+        : { facingMode: { ideal: "environment" } }),
+    };
+    activeScanner.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints });
+    activeScanner.track = activeScanner.stream.getVideoTracks()[0];
+    const video = document.createElement("video");
+    video.autoplay = true;
+    video.muted = true;
+    video.playsInline = true;
+    video.setAttribute("aria-label", "Live camera preview");
+    activeScanner.video = video;
+    elements.reader.replaceChildren(video);
+    video.srcObject = activeScanner.stream;
+    await video.play();
+    activeScanner.state = 2;
     starting = false;
     running = true;
     setControls();
@@ -630,19 +678,19 @@ async function startCamera() {
       refreshCameraChoices(activeScanner),
     ]);
     if (scanner !== activeScanner || !running) return;
-    if (activeScanner.getState() === 2) {
-      if (guideMode === "fixed") showFixedCenterGuide();
-      else startBarcodeGuideTracking();
-      startGuidedZoomScanning(activeScanner, currentSession);
-    }
     setupCameraTools(activeScanner);
+    await resetCameraZoom();
     if (stopRequested) {
       await stopCamera(pendingStopMessage);
       return;
     }
+    showFixedCenterGuide();
+    startCenterPatternTracking(activeScanner);
+    startGuidedZoomScanning(activeScanner, currentSession);
     setControls();
-    setStatus("Scanning. Hold the barcode inside the green frame.", "scanning");
+    setStatus("Scanning the center frame. Auto zoom increases when a barcode pattern is near the center.", "scanning");
   } catch (error) {
+    await activeScanner.stop();
     starting = false;
     running = false;
     if (scanner === activeScanner) scanner = null;
@@ -653,20 +701,21 @@ async function startCamera() {
   }
 }
 
-function scanAgain() {
+async function scanAgain() {
   if (starting || stopping) return;
   if (scanner && scanner.getState() === 3) {
     try {
-      scanner.resume();
+      await resetCameraZoom();
+      await scanner.resume();
       hasResult = false;
-      if (guideMode === "fixed") showFixedCenterGuide();
-      else startBarcodeGuideTracking();
+      showFixedCenterGuide();
+      startCenterPatternTracking(scanner);
       startGuidedZoomScanning(scanner, sessionId);
       elements.pausedScanButton.hidden = true;
       elements.resultCard.hidden = true;
       elements.result.textContent = "";
       setControls();
-      setStatus("Scanning again. Hold the barcode inside the green frame.", "scanning");
+      setStatus("Scanning the center frame. Camera zoom resets and increases when a barcode pattern is near the center.", "scanning");
     } catch (error) {
       setStatus(error?.message || "Could not resume the camera. Press Start camera to retry.", "error");
     }
@@ -744,16 +793,10 @@ elements.start.addEventListener("click", () => void startCamera());
 elements.stop.addEventListener("click", () => void stopCamera());
 elements.again.addEventListener("click", scanAgain);
 elements.pausedScanButton.addEventListener("click", scanAgain);
-elements.guideModeButton.addEventListener("click", () => {
-  if (!running || starting || stopping) return;
-  guideMode = guideMode === "auto" ? "fixed" : "auto";
-  applyGuideMode();
-});
 elements.camera.addEventListener("change", () => void changeCamera());
 window.addEventListener("pagehide", () => {
   void stopCamera(null);
-  disposeGuidedWorkers();
+  disposeGuideScanLoop();
 });
 
-updateGuideModeControl();
 setControls();

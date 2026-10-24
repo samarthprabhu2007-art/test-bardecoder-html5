@@ -25,14 +25,12 @@
 
         <div class="scanner-shell">
           <div id="reader" aria-label="Camera barcode preview"></div>
+          <div id="decoder" class="decoder-host" aria-hidden="true"></div>
           <div id="barcodeGuide" class="barcode-guide" aria-hidden="true" hidden><span>BARCODE AREA</span></div>
           <button id="pausedScanButton" class="paused-scan-button" type="button" hidden>Scan another</button>
         </div>
 
-        <div class="guide-mode-control">
-          <button id="guideModeButton" class="button button-secondary" type="button" aria-pressed="false" disabled>Guide: Auto-follow · tap to lock center</button>
-          <p id="guideModeHint">Auto-follow is on by default. Guided zoom checks the framed area while the existing center scanner keeps running.</p>
-        </div>
+        <p class="scan-hint">Scanning stays in the center frame. Camera zoom gradually increases when barcode-like lines appear near the center.</p>
 
         <div id="cameraTools" class="camera-tools" hidden>
           <label class="zoom-control" for="zoomRange">

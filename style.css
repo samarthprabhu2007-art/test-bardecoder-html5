@@ -28,9 +28,7 @@ h2 { margin: 0; font-size: clamp(17px, 4vw, 22px); }
 .paused-scan-button:hover { background: #c5ff59; }
 .paused-scan-button:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
 #reader { width: 100%; min-height: 270px; }
-/* Force the injected video element to always be visible and fill the shell.
-   html5-qrcode dynamically inserts <video> which can start display:none or
-   have zero dimensions, causing the "black screen" symptom on Chrome. */
+/* The camera preview is owned by this page; html5-qrcode receives cropped frames. */
 #reader video {
   display: block !important;
   width: 100% !important;
@@ -39,23 +37,12 @@ h2 { margin: 0; font-size: clamp(17px, 4vw, 22px); }
   object-fit: cover;
   border-radius: 10px;
 }
-#reader canvas { max-width: 100%; }
-#reader__scan_region { min-height: 270px; }
-#qr-shaded-region { display: none !important; pointer-events: none; }
-#qr-shaded-region > div { background-color: #a3e635 !important; border-radius: 2px; box-shadow: 0 0 10px #a3e63588; }
-#qr-shaded-region::after { position: absolute; top: 50%; left: 5%; right: 5%; height: 2px; content: ""; background: linear-gradient(90deg, transparent, #a3e635 12%, #d9ff68 50%, #a3e635 88%, transparent); box-shadow: 0 0 12px #a3e635; animation: scan-beam 1.8s ease-in-out infinite alternate; }
+#decoder { display: none !important; }
 .barcode-guide { position: absolute; z-index: 4; border: 3px solid #a3e635; border-radius: 9px; background: #a3e6300a; box-shadow: 0 0 0 999px #00000018, 0 0 20px #a3e63566; pointer-events: none; transition: left .18s ease-out, top .18s ease-out, width .18s ease-out, height .18s ease-out; }
 .barcode-guide span { position: absolute; top: -27px; left: 0; border-radius: 5px 5px 0 0; padding: 4px 8px; color: #07130b; background: #a3e635; font: 750 10px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .06em; white-space: nowrap; }
 .barcode-guide-detected { border-color: #c5ff59; box-shadow: 0 0 0 999px #00000018, 0 0 24px #c5ff5988; }
 .barcode-guide-detected span { background: #c5ff59; }
-.guide-mode-control { display: grid; gap: 7px; margin-top: 12px; }
-.guide-mode-control .button { width: 100%; }
-.guide-mode-control p { margin: 0; color: #8fa2bd; font-size: 12px; line-height: 1.5; }
-.guide-mode-control .button[aria-pressed="true"] { border-color: #a3e635; color: #dcff9b; }
-@keyframes scan-beam { from { transform: translateY(-25px); } to { transform: translateY(25px); } }
-#reader__dashboard, #reader__header_message, #reader__status_span { color: #b9c7dd !important; }
-#reader__dashboard_section_csr button, #reader__dashboard_section_swaplink { color: #b9c7dd !important; }
-#reader select, #reader button { border-radius: 8px !important; }
+.scan-hint { margin: 12px 0 0; color: #8fa2bd; font-size: 12px; line-height: 1.5; }
 .camera-picker { display: grid; gap: 8px; margin-top: 16px; }
 .camera-picker label { color: #d6e2f5; font-size: 14px; font-weight: 700; }
 .camera-picker select { width: 100%; min-height: 44px; border: 1px solid #304768; border-radius: 9px; padding: 0 12px; background: #101f38; color: #f4f7ff; font: inherit; }
@@ -92,7 +79,7 @@ h2 { margin: 0; font-size: clamp(17px, 4vw, 22px); }
 @media (max-width: 520px) {
   .app-shell { width: min(100% - 22px, 760px); padding-top: 30px; }
   .scanner-card, .result-card { padding: 15px; border-radius: 14px; }
-  .scanner-shell, #reader, #reader__scan_region { min-height: 230px; }
+  .scanner-shell, #reader { min-height: 230px; }
   #reader video { min-height: 220px; }
   .button { flex: 1 1 auto; }
   .camera-tools { grid-template-columns: 1fr; }
