@@ -110,8 +110,8 @@ async function startCamera() {
       {
         fps: 10,
         qrbox: (width, height) => ({
-          width: Math.max(180, Math.floor(Math.min(width * 0.9, 560))),
-          height: Math.max(90, Math.floor(Math.min(height * 0.36, 190))),
+          width: Math.max(180, Math.floor(Math.min(width * 0.94, 600))),
+          height: Math.max(70, Math.floor(Math.min(height * 0.18, 120))),
         }),
         aspectRatio: 16 / 9,
         disableFlip: true,
