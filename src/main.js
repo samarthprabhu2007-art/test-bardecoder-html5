@@ -37,7 +37,7 @@ function setStatus(message, kind = "idle") {
 function setControls() {
   elements.start.disabled = starting || running || stopping;
   elements.stop.disabled = (!starting && !running) || stopping || stopRequested;
-  elements.again.hidden = running || starting || stopping || !hasResult;
+  elements.again.hidden = starting || stopping || !hasResult;
 }
 
 function cameraErrorMessage(error) {
@@ -117,17 +117,19 @@ async function startCamera() {
         disableFlip: true,
       },
       async (decodedText) => {
-        if (!running || hasResult || scanner !== activeScanner || sessionId !== currentSession) return;
+        if (!running || hasResult || activeScanner.getState() !== 2 || scanner !== activeScanner || sessionId !== currentSession) return;
         hasResult = true;
         elements.result.textContent = decodedText;
         elements.resultCard.hidden = false;
-        setStatus("Code 128 detected. Stopping camera…", "success");
-        window.setTimeout(async () => {
-          await stopCamera(null);
-          if (sessionId !== currentSession) return;
-          setStatus("Code 128 detected. Camera stopped.", "success");
+        try {
+          activeScanner.pause(true);
+          setControls();
+          setStatus("Code 128 detected. Camera paused; scan again to resume.", "success");
           window.alert(`Code 128 detected:\n\n${decodedText}`);
-        }, 0);
+        } catch (error) {
+          elements.again.hidden = true;
+          setStatus(`Read ${decodedText}, but could not pause the preview: ${error?.message || "scanner error"}`, "error");
+        }
       },
       () => {
         // No barcode in this frame is normal while scanning.
@@ -152,9 +154,27 @@ async function startCamera() {
   }
 }
 
+function scanAgain() {
+  if (starting || stopping) return;
+  if (scanner && scanner.getState() === 3) {
+    hasResult = false;
+    elements.resultCard.hidden = true;
+    elements.result.textContent = "";
+    try {
+      scanner.resume();
+      setControls();
+      setStatus("Scanning again. Hold the barcode inside the green frame.", "scanning");
+    } catch (error) {
+      setStatus(error?.message || "Could not resume the camera. Press Start camera to retry.", "error");
+    }
+    return;
+  }
+  void startCamera();
+}
+
 elements.start.addEventListener("click", () => void startCamera());
 elements.stop.addEventListener("click", () => void stopCamera());
-elements.again.addEventListener("click", () => void startCamera());
+elements.again.addEventListener("click", scanAgain);
 window.addEventListener("pagehide", () => void stopCamera(null));
 
 setControls();
