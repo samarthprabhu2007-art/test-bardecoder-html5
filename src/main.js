@@ -21,6 +21,8 @@ let running = false;
 let stopping = false;
 let stopRequested = false;
 let hasResult = false;
+let stopPromise = null;
+let pendingStopMessage = "Camera stopped.";
 
 function setStatus(message, kind = "idle") {
   elements.status.textContent = message;
@@ -28,9 +30,9 @@ function setStatus(message, kind = "idle") {
 }
 
 function setControls() {
-  elements.start.disabled = starting || running;
-  elements.stop.disabled = !starting && !running;
-  elements.again.hidden = running || starting || !hasResult;
+  elements.start.disabled = starting || running || stopping;
+  elements.stop.disabled = (!starting && !running) || stopping || stopRequested;
+  elements.again.hidden = running || starting || stopping || !hasResult;
 }
 
 function cameraErrorMessage(error) {
@@ -49,23 +51,37 @@ function cameraErrorMessage(error) {
 }
 
 async function stopCamera(message = "Camera stopped.") {
-  if (stopping) return;
+  if (stopPromise) return stopPromise;
+  if (starting && !running) {
+    stopRequested = true;
+    pendingStopMessage = message;
+    setControls();
+    setStatus("Stopping after camera startup finishes…", "scanning");
+    return;
+  }
+
   stopRequested = true;
   stopping = true;
-  const shouldStop = running || scanner.getState() === 2;
+  const shouldStop = running || scanner.getState() === 2 || scanner.getState() === 3;
   running = false;
-  starting = false;
   setControls();
-  try {
-    if (shouldStop) await scanner.stop();
-  } catch (error) {
-    // The scan may have ended during a simultaneous camera or page lifecycle event.
-    console.debug("Scanner stop cleanup:", error);
-  } finally {
-    stopping = false;
-    setControls();
-    if (message) setStatus(message, hasResult ? "success" : "idle");
-  }
+  stopPromise = (async () => {
+    try {
+      if (shouldStop) await scanner.stop();
+    } catch (error) {
+      // The scan may have ended during a simultaneous camera or page lifecycle event.
+      console.debug("Scanner stop cleanup:", error);
+    } finally {
+      running = false;
+      starting = false;
+      stopRequested = false;
+      stopping = false;
+      stopPromise = null;
+      setControls();
+      if (message) setStatus(message, hasResult ? "success" : "idle");
+    }
+  })();
+  return stopPromise;
 }
 
 async function startCamera() {
@@ -95,29 +111,29 @@ async function startCamera() {
         hasResult = true;
         elements.result.textContent = decodedText;
         elements.resultCard.hidden = false;
-        setStatus("Code 128 detected. Camera stopped.", "success");
         await stopCamera(null);
+        setStatus("Code 128 detected. Camera stopped.", "success");
+        window.alert(`Code 128 detected:\n\n${decodedText}`);
       },
       () => {
         // No barcode in this frame is normal while scanning.
       },
     );
-    if (stopRequested) {
-      await scanner.stop();
-      starting = false;
-      running = false;
-      setControls();
-      return;
-    }
     starting = false;
     running = true;
+    if (stopRequested) {
+      await stopCamera(pendingStopMessage);
+      return;
+    }
     setControls();
     setStatus("Scanning. Hold the barcode inside the green frame.", "scanning");
   } catch (error) {
     starting = false;
     running = false;
+    const wasStopRequested = stopRequested;
+    stopRequested = false;
     setControls();
-    setStatus(cameraErrorMessage(error), "error");
+    setStatus(wasStopRequested ? pendingStopMessage : cameraErrorMessage(error), wasStopRequested ? "idle" : "error");
   }
 }
 
