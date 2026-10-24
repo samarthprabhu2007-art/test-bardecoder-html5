@@ -18,6 +18,8 @@ const elements = {
   cameraToolsHint: document.querySelector("#cameraToolsHint"),
   pausedScanButton: document.querySelector("#pausedScanButton"),
   barcodeGuide: document.querySelector("#barcodeGuide"),
+  guideModeButton: document.querySelector("#guideModeButton"),
+  guideModeHint: document.querySelector("#guideModeHint"),
 };
 
 function createScanner() {
@@ -46,6 +48,18 @@ let zoomApplyInProgress = false;
 let lastZoomApplyAt = 0;
 let guideTrackingId = 0;
 let guideTimer = null;
+let guideMode = "auto";
+let currentGuideBounds = null;
+let guidedScanId = 0;
+let guidedScanTimer = null;
+let guidedScanBusy = false;
+let guidedWorkers = [];
+let guidedJobSequence = 0;
+const guidedZoomFactors = [1, 1.4, 1.8];
+const guidedCanvases = guidedZoomFactors.map(() => {
+  const canvas = document.createElement("canvas");
+  return { canvas, context: canvas.getContext("2d", { willReadFrequently: true }) };
+});
 const guideCanvas = document.createElement("canvas");
 guideCanvas.width = 320;
 guideCanvas.height = 240;
@@ -61,6 +75,18 @@ function setControls() {
   elements.stop.disabled = (!starting && !running) || stopping || stopRequested;
   elements.camera.disabled = starting || stopping;
   elements.again.hidden = starting || stopping || !hasResult;
+  elements.guideModeButton.disabled = !running || starting || stopping;
+}
+
+function updateGuideModeControl() {
+  const isFixed = guideMode === "fixed";
+  elements.guideModeButton.textContent = isFixed
+    ? "Guide: Fixed center · tap to auto-follow"
+    : "Guide: Auto-follow · tap to lock center";
+  elements.guideModeButton.setAttribute("aria-pressed", String(isFixed));
+  elements.guideModeHint.textContent = isFixed
+    ? "Guide is locked at center. Guided zoom checks this area while the existing scanner keeps running."
+    : "Auto-follow is on. Guided zoom checks the framed area while the existing center scanner keeps running.";
 }
 
 function findBarcodePattern(video) {
@@ -140,7 +166,8 @@ function findBarcodePattern(video) {
   };
 }
 
-function placeBarcodeGuide(video, bounds) {
+function placeBarcodeGuide(video, bounds, label = "BARCODE PATTERN", detected = true) {
+  currentGuideBounds = bounds;
   const videoRect = video.getBoundingClientRect();
   const shellRect = elements.barcodeGuide.parentElement.getBoundingClientRect();
   const scale = Math.max(videoRect.width / video.videoWidth, videoRect.height / video.videoHeight);
@@ -157,8 +184,8 @@ function placeBarcodeGuide(video, bounds) {
   elements.barcodeGuide.style.top = `${Math.max(0, top)}px`;
   elements.barcodeGuide.style.width = `${Math.max(0, Math.min(shellRect.width, right) - Math.max(0, left))}px`;
   elements.barcodeGuide.style.height = `${Math.max(0, Math.min(shellRect.height, bottom) - Math.max(0, top))}px`;
-  elements.barcodeGuide.classList.add("barcode-guide-detected");
-  elements.barcodeGuide.querySelector("span").textContent = "BARCODE PATTERN";
+  elements.barcodeGuide.classList.toggle("barcode-guide-detected", detected);
+  elements.barcodeGuide.querySelector("span").textContent = label;
 }
 
 function stopBarcodeGuideTracking(clear = false) {
@@ -168,10 +195,21 @@ function stopBarcodeGuideTracking(clear = false) {
   if (clear) {
     elements.barcodeGuide.hidden = true;
     elements.barcodeGuide.classList.remove("barcode-guide-detected");
+    currentGuideBounds = null;
   }
 }
 
+const CENTER_GUIDE_BOUNDS = { left: 0.03, top: 0.34, right: 0.97, bottom: 0.66 };
+
+function showFixedCenterGuide() {
+  const video = elements.reader.querySelector("video");
+  if (!video?.videoWidth || !video.videoHeight) return;
+  elements.barcodeGuide.hidden = false;
+  placeBarcodeGuide(video, CENTER_GUIDE_BOUNDS, "FIXED CENTER", false);
+}
+
 function startBarcodeGuideTracking() {
+  if (guideMode !== "auto") return;
   stopBarcodeGuideTracking(true);
   const trackingId = guideTrackingId;
   elements.barcodeGuide.hidden = false;
@@ -193,6 +231,151 @@ function startBarcodeGuideTracking() {
     guideTimer = setTimeout(scanFrame, 180);
   };
   scanFrame();
+}
+
+function ensureGuidedWorkers() {
+  if (guidedWorkers.length) return guidedWorkers.some((slot) => !slot.failed);
+  if (typeof Worker === "undefined") return false;
+
+  const createdWorkers = [];
+  try {
+    for (const _scale of guidedZoomFactors) {
+      const worker = new Worker(new URL("./barcode-zoom-worker.js", import.meta.url), { type: "module" });
+      const slot = { worker, pending: null, failed: false };
+      worker.addEventListener("message", (event) => {
+        if (!slot.pending || event.data.id !== slot.pending.id) return;
+        const { resolve } = slot.pending;
+        slot.pending = null;
+        resolve(event.data.text || null);
+      });
+      worker.addEventListener("error", () => {
+        slot.failed = true;
+        if (slot.pending) {
+          slot.pending.resolve(null);
+          slot.pending = null;
+        }
+      });
+      createdWorkers.push(slot);
+    }
+    guidedWorkers = createdWorkers;
+    return true;
+  } catch {
+    createdWorkers.forEach(({ worker }) => worker.terminate());
+    guidedWorkers = [];
+    return false;
+  }
+}
+
+function sendGuidedVariant(slot, imageData, width, height) {
+  if (slot.failed || slot.pending) return Promise.resolve(null);
+  const id = ++guidedJobSequence;
+  return new Promise((resolve) => {
+    slot.pending = { id, resolve };
+    try {
+      slot.worker.postMessage({ id, width, height, pixels: imageData.data.buffer }, [imageData.data.buffer]);
+    } catch {
+      slot.pending = null;
+      resolve(null);
+    }
+  });
+}
+
+async function decodeGuideAtMultipleScales(video, bounds, activeScanner, activeSession) {
+  if (!ensureGuidedWorkers() || !video.videoWidth || !video.videoHeight) return;
+  const sourceLeft = Math.max(0, Math.floor(bounds.left * video.videoWidth));
+  const sourceTop = Math.max(0, Math.floor(bounds.top * video.videoHeight));
+  const sourceRight = Math.min(video.videoWidth, Math.ceil(bounds.right * video.videoWidth));
+  const sourceBottom = Math.min(video.videoHeight, Math.ceil(bounds.bottom * video.videoHeight));
+  const sourceWidth = sourceRight - sourceLeft;
+  const sourceHeight = sourceBottom - sourceTop;
+  if (sourceWidth < 8 || sourceHeight < 4) return;
+
+  const variants = [];
+  const usedWidths = new Set();
+  for (let index = 0; index < guidedZoomFactors.length; index += 1) {
+    const slot = guidedWorkers[index];
+    const surface = guidedCanvases[index];
+    if (!slot || slot.failed || !surface.context) continue;
+    const outputWidth = Math.min(1920, Math.round(sourceWidth * guidedZoomFactors[index]));
+    if (outputWidth < 1 || usedWidths.has(outputWidth)) continue;
+    usedWidths.add(outputWidth);
+    const outputHeight = Math.max(1, Math.round(sourceHeight * outputWidth / sourceWidth));
+    surface.canvas.width = outputWidth;
+    surface.canvas.height = outputHeight;
+    surface.context.drawImage(video, sourceLeft, sourceTop, sourceWidth, sourceHeight, 0, 0, outputWidth, outputHeight);
+    const imageData = surface.context.getImageData(0, 0, outputWidth, outputHeight);
+    variants.push(sendGuidedVariant(slot, imageData, outputWidth, outputHeight));
+  }
+
+  await Promise.all(variants.map(async (variant) => {
+    const decodedText = await variant;
+    if (decodedText && running && !hasResult && scanner === activeScanner && sessionId === activeSession) {
+      acceptDecodedText(decodedText, activeScanner, activeSession);
+    }
+  }));
+}
+
+function stopGuidedZoomScanning() {
+  guidedScanId += 1;
+  clearTimeout(guidedScanTimer);
+  guidedScanTimer = null;
+}
+
+function disposeGuidedWorkers() {
+  stopGuidedZoomScanning();
+  for (const slot of guidedWorkers) {
+    slot.worker.terminate();
+    slot.pending?.resolve(null);
+  }
+  guidedWorkers = [];
+}
+
+function startGuidedZoomScanning(activeScanner = scanner, activeSession = sessionId) {
+  stopGuidedZoomScanning();
+  const scanId = guidedScanId;
+  const video = elements.reader.querySelector("video");
+  if (!video) return;
+
+  const scanFrame = async () => {
+    if (scanId !== guidedScanId || !running || hasResult || scanner !== activeScanner
+      || activeScanner?.getState() !== 2 || !video.isConnected) return;
+
+    if (guidedScanBusy) {
+      guidedScanTimer = setTimeout(scanFrame, 90);
+      return;
+    }
+    if (!currentGuideBounds) {
+      guidedScanTimer = setTimeout(scanFrame, 120);
+      return;
+    }
+
+    guidedScanBusy = true;
+    try {
+      await decodeGuideAtMultipleScales(video, { ...currentGuideBounds }, activeScanner, activeSession);
+    } catch {
+      // The original live scanner stays active if a background crop cannot be processed.
+    } finally {
+      guidedScanBusy = false;
+    }
+
+    if (scanId === guidedScanId && running && !hasResult) {
+      guidedScanTimer = setTimeout(scanFrame, 120);
+    }
+  };
+  void scanFrame();
+}
+
+function applyGuideMode() {
+  updateGuideModeControl();
+  if (!running) return;
+  if (guideMode === "fixed") {
+    stopBarcodeGuideTracking(true);
+    showFixedCenterGuide();
+  } else {
+    currentGuideBounds = null;
+    startBarcodeGuideTracking();
+  }
+  startGuidedZoomScanning();
 }
 
 function setupCameraTools(activeScanner) {
@@ -329,8 +512,31 @@ async function refreshCameraChoices(activeScanner) {
   }
 }
 
+function acceptDecodedText(decodedText, activeScanner, activeSession) {
+  if (!decodedText || !running || hasResult || activeScanner?.getState() !== 2
+    || scanner !== activeScanner || sessionId !== activeSession) return;
+
+  hasResult = true;
+  elements.result.textContent = decodedText;
+  elements.resultCard.hidden = false;
+  stopBarcodeGuideTracking();
+  stopGuidedZoomScanning();
+  try {
+    activeScanner.pause(true);
+    elements.pausedScanButton.hidden = false;
+    setControls();
+    setStatus("Code 128 detected. Camera paused; scan again to resume.", "success");
+    window.alert(`Code 128 detected:\n\n${decodedText}`);
+  } catch (error) {
+    elements.again.hidden = true;
+    elements.pausedScanButton.hidden = true;
+    setStatus(`Read ${decodedText}, but could not pause the preview: ${error?.message || "scanner error"}`, "error");
+  }
+}
+
 async function stopCamera(message = "Camera stopped.") {
   stopBarcodeGuideTracking(true);
+  stopGuidedZoomScanning();
   elements.pausedScanButton.hidden = true;
   if (stopPromise) return stopPromise;
   if (starting && !running) {
@@ -371,6 +577,9 @@ async function stopCamera(message = "Camera stopped.") {
       clearTimeout(zoomApplyTimer);
       zoomApplyTimer = null;
       pendingZoom = null;
+      guideMode = "auto";
+      currentGuideBounds = null;
+      updateGuideModeControl();
       setControls();
       if (message) setStatus(message, hasResult ? "success" : "idle");
     }
@@ -407,21 +616,7 @@ async function startCamera() {
         disableFlip: false,
       },
       async (decodedText) => {
-        if (!running || hasResult || activeScanner.getState() !== 2 || scanner !== activeScanner || sessionId !== currentSession) return;
-        hasResult = true;
-        elements.result.textContent = decodedText;
-        elements.resultCard.hidden = false;
-        try {
-          stopBarcodeGuideTracking();
-          activeScanner.pause(true);
-          elements.pausedScanButton.hidden = false;
-          setControls();
-          setStatus("Code 128 detected. Camera paused; scan again to resume.", "success");
-          window.alert(`Code 128 detected:\n\n${decodedText}`);
-        } catch (error) {
-          elements.again.hidden = true;
-          setStatus(`Read ${decodedText}, but could not pause the preview: ${error?.message || "scanner error"}`, "error");
-        }
+        acceptDecodedText(decodedText, activeScanner, currentSession);
       },
       () => {
         // No barcode in this frame is normal while scanning.
@@ -435,7 +630,11 @@ async function startCamera() {
       refreshCameraChoices(activeScanner),
     ]);
     if (scanner !== activeScanner || !running) return;
-    if (activeScanner.getState() === 2) startBarcodeGuideTracking();
+    if (activeScanner.getState() === 2) {
+      if (guideMode === "fixed") showFixedCenterGuide();
+      else startBarcodeGuideTracking();
+      startGuidedZoomScanning(activeScanner, currentSession);
+    }
     setupCameraTools(activeScanner);
     if (stopRequested) {
       await stopCamera(pendingStopMessage);
@@ -459,8 +658,10 @@ function scanAgain() {
   if (scanner && scanner.getState() === 3) {
     try {
       scanner.resume();
-      startBarcodeGuideTracking();
       hasResult = false;
+      if (guideMode === "fixed") showFixedCenterGuide();
+      else startBarcodeGuideTracking();
+      startGuidedZoomScanning(scanner, sessionId);
       elements.pausedScanButton.hidden = true;
       elements.resultCard.hidden = true;
       elements.result.textContent = "";
@@ -543,7 +744,16 @@ elements.start.addEventListener("click", () => void startCamera());
 elements.stop.addEventListener("click", () => void stopCamera());
 elements.again.addEventListener("click", scanAgain);
 elements.pausedScanButton.addEventListener("click", scanAgain);
+elements.guideModeButton.addEventListener("click", () => {
+  if (!running || starting || stopping) return;
+  guideMode = guideMode === "auto" ? "fixed" : "auto";
+  applyGuideMode();
+});
 elements.camera.addEventListener("change", () => void changeCamera());
-window.addEventListener("pagehide", () => void stopCamera(null));
+window.addEventListener("pagehide", () => {
+  void stopCamera(null);
+  disposeGuidedWorkers();
+});
 
+updateGuideModeControl();
 setControls();

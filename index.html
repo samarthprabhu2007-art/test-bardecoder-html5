@@ -29,6 +29,11 @@
           <button id="pausedScanButton" class="paused-scan-button" type="button" hidden>Scan another</button>
         </div>
 
+        <div class="guide-mode-control">
+          <button id="guideModeButton" class="button button-secondary" type="button" aria-pressed="false" disabled>Guide: Auto-follow · tap to lock center</button>
+          <p id="guideModeHint">Auto-follow is on by default. Guided zoom checks the framed area while the existing center scanner keeps running.</p>
+        </div>
+
         <div id="cameraTools" class="camera-tools" hidden>
           <label class="zoom-control" for="zoomRange">
             <span><span>Zoom</span><output id="zoomValue" for="zoomRange">Unavailable</output></span>

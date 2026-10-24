@@ -13,6 +13,8 @@ Open the localhost URL printed by Vite. On a phone, camera access requires an HT
 
 Press **Start camera** and allow camera access. The page requests a rear camera, prefers 1080p when supported, and asks for continuous autofocus when the active camera reports support. Use **Camera lens** to choose another listed device if the automatic rear camera is blurry; hardware names and focus controls vary by phone. A successful read pauses the preview and displays the decoded text in the green panel and a popup. Use **Scan another** to resume the same camera session without reopening camera permission. Press **Stop** to fully release the camera.
 
+The green guide follows a visual barcode-pattern detector by default. Use **Guide: Auto-follow** to lock it to the center or switch back to following the pattern. A separate local ZXing assist checks the framed crop at three software scales in Web Workers while the original html5-qrcode center scan continues. Neither path uploads camera frames. This extra assist may use more battery/CPU, and its speed and reliability need checking on the target phone.
+
 ## Notes
 
 - This is a scanner library comparison only; it does not verify membership.

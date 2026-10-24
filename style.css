@@ -48,6 +48,10 @@ h2 { margin: 0; font-size: clamp(17px, 4vw, 22px); }
 .barcode-guide span { position: absolute; top: -27px; left: 0; border-radius: 5px 5px 0 0; padding: 4px 8px; color: #07130b; background: #a3e635; font: 750 10px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .06em; white-space: nowrap; }
 .barcode-guide-detected { border-color: #c5ff59; box-shadow: 0 0 0 999px #00000018, 0 0 24px #c5ff5988; }
 .barcode-guide-detected span { background: #c5ff59; }
+.guide-mode-control { display: grid; gap: 7px; margin-top: 12px; }
+.guide-mode-control .button { width: 100%; }
+.guide-mode-control p { margin: 0; color: #8fa2bd; font-size: 12px; line-height: 1.5; }
+.guide-mode-control .button[aria-pressed="true"] { border-color: #a3e635; color: #dcff9b; }
 @keyframes scan-beam { from { transform: translateY(-25px); } to { transform: translateY(25px); } }
 #reader__dashboard, #reader__header_message, #reader__status_span { color: #b9c7dd !important; }
 #reader__dashboard_section_csr button, #reader__dashboard_section_swaplink { color: #b9c7dd !important; }
