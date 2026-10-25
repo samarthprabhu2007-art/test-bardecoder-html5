@@ -118,6 +118,13 @@ function showScanToast(studentId) {
   }, 3500);
 }
 
+function hideScanToast() {
+  clearTimeout(toastTimer);
+  toastTimer = null;
+  elements.toast.hidden = true;
+  elements.toast.textContent = "";
+}
+
 function setControls() {
   elements.start.disabled = starting || running || stopping;
   elements.stop.disabled = (!starting && !running) || stopping || stopRequested;
@@ -723,6 +730,7 @@ async function stopCamera(message = "Camera stopped.") {
 
 async function startCamera() {
   if (starting || running || stopping) return;
+  hideScanToast();
   stopRequested = false;
   starting = true;
   hasResult = false;
@@ -792,6 +800,7 @@ async function startCamera() {
 
 async function scanAgain() {
   if (starting || stopping) return;
+  hideScanToast();
   if (scanner && scanner.getState() === 3) {
     try {
       await resetCameraZoom();
