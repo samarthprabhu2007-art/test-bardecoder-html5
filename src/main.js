@@ -20,6 +20,7 @@ const elements = {
   torch: document.querySelector("#torchButton"),
   cameraToolsHint: document.querySelector("#cameraToolsHint"),
   pausedScanButton: document.querySelector("#pausedScanButton"),
+  resetZoom: document.querySelector("#resetZoomButton"),
   barcodeGuide: document.querySelector("#barcodeGuide"),
 };
 
@@ -538,6 +539,7 @@ function setupCameraTools(activeScanner) {
       elements.zoomRange.max = String(max);
       elements.zoomRange.step = String(step > 0 ? step : 0.1);
       elements.autoZoom.disabled = max <= min;
+      elements.resetZoom.hidden = max <= min;
       if (max <= min) {
         elements.autoZoom.textContent = "Auto zoom unavailable";
         elements.autoZoom.setAttribute("aria-pressed", "false");
@@ -551,6 +553,7 @@ function setupCameraTools(activeScanner) {
       elements.zoomValue.textContent = "Unavailable";
       elements.autoZoom.textContent = "Auto zoom unavailable";
       elements.autoZoom.setAttribute("aria-pressed", "false");
+      elements.resetZoom.hidden = true;
     }
 
     if (trackCapabilities.torch === true) {
@@ -572,6 +575,7 @@ function setupCameraTools(activeScanner) {
     elements.autoZoom.disabled = true;
     elements.autoZoom.textContent = "Auto zoom unavailable";
     elements.autoZoom.setAttribute("aria-pressed", "false");
+    elements.resetZoom.hidden = true;
     elements.torch.disabled = true;
   }
 }
@@ -710,6 +714,7 @@ async function stopCamera(message = "Camera stopped.") {
       stopping = false;
       stopPromise = null;
       elements.cameraTools.hidden = true;
+      elements.resetZoom.hidden = true;
       elements.zoomRange.disabled = true;
       elements.torch.disabled = true;
       elements.torch.textContent = "Flash unavailable";
@@ -896,6 +901,10 @@ elements.autoZoom.addEventListener("click", () => {
   elements.cameraToolsHint.textContent = autoZoomEnabled
     ? "Auto zoom is on. It eases in more slowly at higher zoom levels."
     : "Auto zoom is off. Use the slider to adjust zoom manually.";
+});
+
+elements.resetZoom.addEventListener("click", () => {
+  void resetCameraZoom();
 });
 
 elements.start.addEventListener("click", () => void startCamera());

@@ -27,6 +27,9 @@ h2 { margin: 0; font-size: clamp(17px, 4vw, 22px); }
 .paused-scan-button { position: absolute; z-index: 5; top: 50%; left: 50%; min-height: 48px; transform: translate(-50%, -50%); border: 1px solid #9df4b8; border-radius: 12px; padding: 0 20px; color: #07130b; background: #a3e635; box-shadow: 0 8px 28px #0009; font-weight: 800; cursor: pointer; }
 .paused-scan-button:hover { background: #c5ff59; }
 .paused-scan-button:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+.reset-zoom-button { position: absolute; z-index: 6; top: 12px; right: 12px; min-height: 36px; border: 1px solid #9bbcff88; border-radius: 9px; padding: 0 12px; color: #f4f7ff; background: #0d1830dd; box-shadow: 0 4px 14px #0007; font-size: 12px; font-weight: 700; cursor: pointer; }
+.reset-zoom-button:hover { background: #1d3153; }
+.reset-zoom-button:focus-visible { outline: 3px solid #8bb5ff; outline-offset: 2px; }
 #reader { width: 100%; min-height: 270px; }
 /* The camera preview is owned by this page; html5-qrcode receives cropped frames. */
 #reader video {
