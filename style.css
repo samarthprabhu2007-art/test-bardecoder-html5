@@ -49,13 +49,14 @@ h2 { margin: 0; font-size: clamp(17px, 4vw, 22px); }
 .camera-picker select:focus-visible { outline: 3px solid #8bb5ff; outline-offset: 2px; }
 .camera-picker select:disabled { opacity: .55; }
 .camera-picker p { margin: 0; color: #8fa2bd; font-size: 12px; line-height: 1.5; }
-.camera-tools { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; margin-top: 14px; border: 1px solid #243958; border-radius: 11px; padding: 13px; background: #0a1427; }
+.camera-tools { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end; gap: 12px; margin-top: 14px; border: 1px solid #243958; border-radius: 11px; padding: 13px; background: #0a1427; }
 .zoom-control { display: grid; gap: 9px; color: #d6e2f5; font-size: 13px; font-weight: 700; }
 .zoom-control > span { display: flex; justify-content: space-between; gap: 12px; }
 .zoom-control output { color: #a9bad5; font-variant-numeric: tabular-nums; }
 .zoom-control input { width: 100%; accent-color: #85f0a2; cursor: pointer; }
 .zoom-control input:disabled { cursor: not-allowed; opacity: .55; }
 .torch-button { min-height: 42px; white-space: nowrap; }
+.auto-zoom-button { min-height: 42px; white-space: nowrap; }
 .camera-tools-hint { grid-column: 1 / -1; margin: 0; color: #8fa2bd; font-size: 12px; line-height: 1.5; }
 .status-row { display: flex; align-items: center; gap: 10px; margin: 18px 0; color: #b8c7df; }
 .status-row p { margin: 0; line-height: 1.5; }

@@ -14,6 +14,7 @@ const elements = {
   cameraTools: document.querySelector("#cameraTools"),
   zoomRange: document.querySelector("#zoomRange"),
   zoomValue: document.querySelector("#zoomValue"),
+  autoZoom: document.querySelector("#autoZoomButton"),
   torch: document.querySelector("#torchButton"),
   cameraToolsHint: document.querySelector("#cameraToolsHint"),
   pausedScanButton: document.querySelector("#pausedScanButton"),
@@ -82,6 +83,7 @@ let lastZoomApplyAt = 0;
 let zoomMin = 1;
 let zoomMax = 1;
 let zoomStep = 0.1;
+let autoZoomEnabled = true;
 let lastAutoZoomAt = 0;
 let guideTrackingId = 0;
 let guideTimer = null;
@@ -257,8 +259,7 @@ function isPatternNearCenter(bounds) {
 }
 
 async function increaseCameraZoom(activeScanner) {
-  if (!zoomFeature || zoomApplyInProgress || pendingZoom !== null
-    || performance.now() - lastAutoZoomAt < 450) return;
+  if (!autoZoomEnabled || !zoomFeature || zoomApplyInProgress || pendingZoom !== null) return;
 
   const feature = zoomFeature;
   const current = Number(activeScanner.track?.getSettings().zoom ?? elements.zoomRange.value ?? zoomMin);
@@ -267,7 +268,14 @@ async function increaseCameraZoom(activeScanner) {
     return;
   }
 
-  const increment = Math.max(zoomStep, (zoomMax - zoomMin) * 0.05);
+  const range = zoomMax - zoomMin;
+  const progress = range > 0 ? (current - zoomMin) / range : 1;
+  // Move quickly while the barcode is small, then use smaller steps and longer
+  // pauses near the target so camera focus/exposure can settle between changes.
+  const stepFraction = progress < 0.55 ? 0.035 : progress < 0.8 ? 0.018 : 0.008;
+  const interval = progress < 0.55 ? 420 : progress < 0.8 ? 700 : 1000;
+  if (performance.now() - lastAutoZoomAt < interval) return;
+  const increment = Math.max(zoomStep, range * stepFraction);
   const nextZoom = Math.min(zoomMax, current + increment);
   zoomApplyInProgress = true;
   lastAutoZoomAt = performance.now();
@@ -276,7 +284,7 @@ async function increaseCameraZoom(activeScanner) {
     if (zoomFeature === feature) {
       elements.zoomRange.value = String(nextZoom);
       elements.zoomValue.textContent = `${nextZoom.toFixed(1)}?`;
-      elements.cameraToolsHint.textContent = `Center barcode pattern found. Auto zoom: ${nextZoom.toFixed(1)}?`;
+      elements.cameraToolsHint.textContent = `Center barcode pattern found. Auto zoom is easing in: ${nextZoom.toFixed(1)}×`;
     }
   } catch {
     if (zoomFeature === feature) {
@@ -428,6 +436,10 @@ function setupCameraTools(activeScanner) {
   zoomMin = 1;
   zoomMax = 1;
   zoomStep = 0.1;
+  autoZoomEnabled = true;
+  elements.autoZoom.textContent = "Auto zoom: On";
+  elements.autoZoom.setAttribute("aria-pressed", "true");
+  elements.autoZoom.disabled = true;
   elements.cameraTools.hidden = false;
   elements.cameraToolsHint.textContent = "Zoom and flash depend on the selected camera.";
   zoomFeature = null;
@@ -455,6 +467,11 @@ function setupCameraTools(activeScanner) {
       elements.zoomRange.min = String(min);
       elements.zoomRange.max = String(max);
       elements.zoomRange.step = String(step > 0 ? step : 0.1);
+      elements.autoZoom.disabled = max <= min;
+      if (max <= min) {
+        elements.autoZoom.textContent = "Auto zoom unavailable";
+        elements.autoZoom.setAttribute("aria-pressed", "false");
+      }
       const current = activeScanner.track.getSettings().zoom;
       elements.zoomRange.value = String(current ?? min);
       elements.zoomRange.disabled = max <= min;
@@ -462,6 +479,8 @@ function setupCameraTools(activeScanner) {
     } else {
       elements.zoomRange.disabled = true;
       elements.zoomValue.textContent = "Unavailable";
+      elements.autoZoom.textContent = "Auto zoom unavailable";
+      elements.autoZoom.setAttribute("aria-pressed", "false");
     }
 
     if (trackCapabilities.torch === true) {
@@ -480,6 +499,9 @@ function setupCameraTools(activeScanner) {
   } catch {
     elements.zoomRange.disabled = true;
     elements.zoomValue.textContent = "Unavailable";
+    elements.autoZoom.disabled = true;
+    elements.autoZoom.textContent = "Auto zoom unavailable";
+    elements.autoZoom.setAttribute("aria-pressed", "false");
     elements.torch.disabled = true;
   }
 }
@@ -787,6 +809,15 @@ elements.torch.addEventListener("click", async () => {
   } finally {
     elements.torch.disabled = !torchFeature;
   }
+});
+
+elements.autoZoom.addEventListener("click", () => {
+  autoZoomEnabled = !autoZoomEnabled;
+  elements.autoZoom.textContent = `Auto zoom: ${autoZoomEnabled ? "On" : "Off"}`;
+  elements.autoZoom.setAttribute("aria-pressed", String(autoZoomEnabled));
+  elements.cameraToolsHint.textContent = autoZoomEnabled
+    ? "Auto zoom is on. It eases in more slowly at higher zoom levels."
+    : "Auto zoom is off. Use the slider to adjust zoom manually.";
 });
 
 elements.start.addEventListener("click", () => void startCamera());
