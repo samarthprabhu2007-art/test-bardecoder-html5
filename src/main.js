@@ -11,6 +11,7 @@ const elements = {
   again: document.querySelector("#againButton"),
   resultCard: document.querySelector("#resultCard"),
   result: document.querySelector("#resultValue"),
+  toast: document.querySelector("#scanToast"),
   camera: document.querySelector("#cameraSelect"),
   cameraTools: document.querySelector("#cameraTools"),
   zoomRange: document.querySelector("#zoomRange"),
@@ -94,6 +95,7 @@ let guidedScanTimer = null;
 let guidedScanBusy = false;
 let nativeBarcodeDetector = null;
 let nativeDetectorStatus = "checking";
+let toastTimer = null;
 const guidedCropCanvas = document.createElement("canvas");
 const guidedCropContext = guidedCropCanvas.getContext("2d", { willReadFrequently: true });
 const guideCanvas = document.createElement("canvas");
@@ -104,6 +106,16 @@ const guideContext = guideCanvas.getContext("2d", { willReadFrequently: true });
 function setStatus(message, kind = "idle") {
   elements.status.textContent = message;
   elements.statusRow.className = `status-row status-${kind}`;
+}
+
+function showScanToast(studentId) {
+  clearTimeout(toastTimer);
+  elements.toast.textContent = `Student ID detected: ${studentId}`;
+  elements.toast.hidden = false;
+  toastTimer = setTimeout(() => {
+    elements.toast.hidden = true;
+    toastTimer = null;
+  }, 3500);
 }
 
 function setControls() {
@@ -650,7 +662,7 @@ function acceptDecodedText(decodedText, activeScanner, activeSession) {
     elements.pausedScanButton.hidden = false;
     setControls();
     setStatus("Code 128 detected. Camera paused; scan again to resume.", "success");
-    window.alert(`Student ID detected:\n\n${studentId}`);
+    showScanToast(studentId);
   } catch (error) {
     elements.again.hidden = true;
     elements.pausedScanButton.hidden = true;
