@@ -11,7 +11,7 @@
       <header class="page-header">
         <p class="eyebrow">SCANNER LIBRARY TEST</p>
         <h1>Code 128 camera test</h1>
-        <p class="intro">Testing html5-qrcode with the rear camera. Scanning is processed in your browser.</p>
+        <p class="intro">Compares three local Code 128 decoders on the same camera frame: html5-qrcode, ZBar, and native BarcodeDetector when the browser supports it.</p>
       </header>
 
       <section class="scanner-card" aria-labelledby="scanner-heading">
@@ -30,7 +30,7 @@
           <button id="pausedScanButton" class="paused-scan-button" type="button" hidden>Scan another</button>
         </div>
 
-        <p class="scan-hint">Scanning stays in the center frame. Camera zoom gradually increases when barcode-like lines appear near the center.</p>
+        <p class="scan-hint">All available decoders process the same center-frame crop at once. Two engines must agree, or one engine must return the same value in three consecutive frames.</p>
 
         <div id="cameraTools" class="camera-tools" hidden>
           <label class="zoom-control" for="zoomRange">

@@ -1,4 +1,5 @@
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
+import { scanImageData as scanWithZBar } from "@undecaf/zbar-wasm";
 import "../style.css";
 
 const elements = {
@@ -91,6 +92,9 @@ let currentGuideBounds = null;
 let guidedScanId = 0;
 let guidedScanTimer = null;
 let guidedScanBusy = false;
+let nativeBarcodeDetector = null;
+let nativeDetectorStatus = "checking";
+let decoderVotes = new Map();
 const guidedCropCanvas = document.createElement("canvas");
 const guidedCropContext = guidedCropCanvas.getContext("2d", { willReadFrequently: true });
 const guideCanvas = document.createElement("canvas");
@@ -243,6 +247,59 @@ async function scanCropWithHtml5Qrcode(decoder, imageFile) {
   }
 }
 
+async function configureNativeBarcodeDetector() {
+  nativeBarcodeDetector = null;
+  nativeDetectorStatus = "unavailable";
+  if (!("BarcodeDetector" in window)) return;
+
+  try {
+    const formats = typeof window.BarcodeDetector.getSupportedFormats === "function"
+      ? await window.BarcodeDetector.getSupportedFormats()
+      : ["code_128"];
+    if (!formats.includes("code_128")) return;
+    nativeBarcodeDetector = new window.BarcodeDetector({ formats: ["code_128"] });
+    nativeDetectorStatus = "ready";
+  } catch {
+    nativeBarcodeDetector = null;
+  }
+}
+
+function evaluateDecoderVotes(results, activeScanner, activeSession) {
+  const currentResults = new Map(results.map(({ engine, code }) => [engine, code]));
+  for (const engine of ["html5-qrcode", "ZBar", "Native"]) {
+    const code = currentResults.get(engine);
+    const previous = decoderVotes.get(engine);
+    decoderVotes.set(engine, code
+      ? { code, count: previous?.code === code ? previous.count + 1 : 1 }
+      : { code: "", count: 0 });
+  }
+
+  const agreeing = new Map();
+  for (const { engine, code } of results) {
+    if (!agreeing.has(code)) agreeing.set(code, []);
+    agreeing.get(code).push(engine);
+  }
+  const consensus = [...agreeing.entries()].find(([, engines]) => engines.length >= 2);
+  if (consensus) {
+    elements.cameraToolsHint.textContent = `Decoders agree: ${consensus[1].join(" + ")}.`;
+    acceptDecodedText(consensus[0], activeScanner, activeSession);
+    return;
+  }
+
+  const repeated = [...decoderVotes.entries()].find(([, vote]) => vote.count >= 3);
+  if (repeated) {
+    elements.cameraToolsHint.textContent = `${repeated[0]} confirmed the same value in 3 consecutive frames.`;
+    acceptDecodedText(repeated[1].code, activeScanner, activeSession);
+    return;
+  }
+
+  if (results.length > 1) {
+    elements.cameraToolsHint.textContent = "Decoders disagree; checking the next frame for agreement.";
+  } else if (results.length === 1) {
+    elements.cameraToolsHint.textContent = `${results[0].engine} found a value; confirming with following frames.`;
+  }
+}
+
 const CENTER_GUIDE_BOUNDS = { left: 0.03, top: 0.34, right: 0.97, bottom: 0.66 };
 
 function showFixedCenterGuide() {
@@ -372,9 +429,27 @@ async function decodeGuideCrop(video, bounds, activeScanner, activeSession) {
 
   try {
     const imageFile = new File([blob], "center-frame.jpg", { type: "image/jpeg" });
-    const result = await scanCropWithHtml5Qrcode(activeScanner.decoder, imageFile);
-    if (result?.decodedText && running && !hasResult && scanner === activeScanner && sessionId === activeSession) {
-      acceptDecodedText(result.decodedText, activeScanner, activeSession);
+    const imageData = guidedCropContext.getImageData(0, 0, outputWidth, outputHeight);
+    const jobs = [
+      scanCropWithHtml5Qrcode(activeScanner.decoder, imageFile)
+        .then((result) => result?.decodedText ? { engine: "html5-qrcode", code: result.decodedText } : null),
+      scanWithZBar(imageData).then((symbols) => {
+        const symbol = symbols.find((item) => /128/.test(item.typeName || ""));
+        return symbol ? { engine: "ZBar", code: symbol.decode() } : null;
+      }),
+      nativeBarcodeDetector
+        ? nativeBarcodeDetector.detect(guidedCropCanvas).then((symbols) => {
+          const symbol = symbols.find((item) => item.format === "code_128");
+          return symbol ? { engine: "Native", code: symbol.rawValue } : null;
+        })
+        : Promise.resolve(null),
+    ];
+    const settled = await Promise.allSettled(jobs);
+    const results = settled
+      .filter((entry) => entry.status === "fulfilled" && entry.value?.code)
+      .map((entry) => entry.value);
+    if (running && !hasResult && scanner === activeScanner && sessionId === activeSession) {
+      evaluateDecoderVotes(results, activeScanner, activeSession);
     }
   } catch {
     // No barcode in this crop/zoom level is normal; the next live frame is tried.
@@ -662,6 +737,7 @@ async function startCamera() {
   stopRequested = false;
   starting = true;
   hasResult = false;
+  decoderVotes = new Map();
   elements.pausedScanButton.hidden = true;
   elements.resultCard.hidden = true;
   elements.result.textContent = "";
@@ -698,6 +774,7 @@ async function startCamera() {
     await Promise.allSettled([
       applyCameraQuality(activeScanner),
       refreshCameraChoices(activeScanner),
+      configureNativeBarcodeDetector(),
     ]);
     if (scanner !== activeScanner || !running) return;
     setupCameraTools(activeScanner);
@@ -710,7 +787,9 @@ async function startCamera() {
     startCenterPatternTracking(activeScanner);
     startGuidedZoomScanning(activeScanner, currentSession);
     setControls();
-    setStatus("Scanning the center frame. Auto zoom increases when a barcode pattern is near the center.", "scanning");
+    setStatus(nativeDetectorStatus === "ready"
+      ? "Scanning each center frame with html5-qrcode, ZBar, and native detection. Two engines must agree, or one must repeat the same value in 3 frames."
+      : "Scanning each center frame with html5-qrcode and ZBar. Native Code 128 detection is unavailable in this browser.", "scanning");
   } catch (error) {
     await activeScanner.stop();
     starting = false;
@@ -730,6 +809,7 @@ async function scanAgain() {
       await resetCameraZoom();
       await scanner.resume();
       hasResult = false;
+      decoderVotes = new Map();
       showFixedCenterGuide();
       startCenterPatternTracking(scanner);
       startGuidedZoomScanning(scanner, sessionId);
@@ -737,7 +817,9 @@ async function scanAgain() {
       elements.resultCard.hidden = true;
       elements.result.textContent = "";
       setControls();
-      setStatus("Scanning the center frame. Camera zoom resets and increases when a barcode pattern is near the center.", "scanning");
+      setStatus(nativeDetectorStatus === "ready"
+        ? "Scanning with html5-qrcode, ZBar, and native detection; engines confirm results across frames."
+        : "Scanning with html5-qrcode and ZBar; native Code 128 detection is unavailable here.", "scanning");
     } catch (error) {
       setStatus(error?.message || "Could not resume the camera. Press Start camera to retry.", "error");
     }
