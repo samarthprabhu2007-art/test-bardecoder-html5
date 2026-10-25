@@ -94,7 +94,6 @@ let guidedScanTimer = null;
 let guidedScanBusy = false;
 let nativeBarcodeDetector = null;
 let nativeDetectorStatus = "checking";
-let decoderVotes = new Map();
 const guidedCropCanvas = document.createElement("canvas");
 const guidedCropContext = guidedCropCanvas.getContext("2d", { willReadFrequently: true });
 const guideCanvas = document.createElement("canvas");
@@ -247,6 +246,11 @@ async function scanCropWithHtml5Qrcode(decoder, imageFile) {
   }
 }
 
+function normalizeStudentId(value) {
+  const normalized = String(value || "").trim().toUpperCase();
+  return /^RVCE\d{2}B[A-Z]{2}\d{3}$/.test(normalized) ? normalized : null;
+}
+
 async function configureNativeBarcodeDetector() {
   nativeBarcodeDetector = null;
   nativeDetectorStatus = "unavailable";
@@ -261,42 +265,6 @@ async function configureNativeBarcodeDetector() {
     nativeDetectorStatus = "ready";
   } catch {
     nativeBarcodeDetector = null;
-  }
-}
-
-function evaluateDecoderVotes(results, activeScanner, activeSession) {
-  const currentResults = new Map(results.map(({ engine, code }) => [engine, code]));
-  for (const engine of ["html5-qrcode", "ZBar", "Native"]) {
-    const code = currentResults.get(engine);
-    const previous = decoderVotes.get(engine);
-    decoderVotes.set(engine, code
-      ? { code, count: previous?.code === code ? previous.count + 1 : 1 }
-      : { code: "", count: 0 });
-  }
-
-  const agreeing = new Map();
-  for (const { engine, code } of results) {
-    if (!agreeing.has(code)) agreeing.set(code, []);
-    agreeing.get(code).push(engine);
-  }
-  const consensus = [...agreeing.entries()].find(([, engines]) => engines.length >= 2);
-  if (consensus) {
-    elements.cameraToolsHint.textContent = `Decoders agree: ${consensus[1].join(" + ")}.`;
-    acceptDecodedText(consensus[0], activeScanner, activeSession);
-    return;
-  }
-
-  const repeated = [...decoderVotes.entries()].find(([, vote]) => vote.count >= 3);
-  if (repeated) {
-    elements.cameraToolsHint.textContent = `${repeated[0]} confirmed the same value in 3 consecutive frames.`;
-    acceptDecodedText(repeated[1].code, activeScanner, activeSession);
-    return;
-  }
-
-  if (results.length > 1) {
-    elements.cameraToolsHint.textContent = "Decoders disagree; checking the next frame for agreement.";
-  } else if (results.length === 1) {
-    elements.cameraToolsHint.textContent = `${results[0].engine} found a value; confirming with following frames.`;
   }
 }
 
@@ -444,12 +412,20 @@ async function decodeGuideCrop(video, bounds, activeScanner, activeSession) {
         })
         : Promise.resolve(null),
     ];
-    const settled = await Promise.allSettled(jobs);
-    const results = settled
-      .filter((entry) => entry.status === "fulfilled" && entry.value?.code)
-      .map((entry) => entry.value);
-    if (running && !hasResult && scanner === activeScanner && sessionId === activeSession) {
-      evaluateDecoderVotes(results, activeScanner, activeSession);
+    const validIdFrom = async (job) => {
+      const result = await job;
+      const studentId = normalizeStudentId(result?.code);
+      if (!studentId) throw new Error("Not a matching student ID");
+      return { ...result, code: studentId };
+    };
+    try {
+      const match = await Promise.any(jobs.map(validIdFrom));
+      if (running && !hasResult && scanner === activeScanner && sessionId === activeSession) {
+        elements.cameraToolsHint.textContent = `Valid ID format detected by ${match.engine}.`;
+        acceptDecodedText(match.code, activeScanner, activeSession);
+      }
+    } catch {
+      // Keep checking new frames until one decoder returns the required ID format.
     }
   } catch {
     // No barcode in this crop/zoom level is normal; the next live frame is tried.
@@ -660,11 +636,12 @@ async function refreshCameraChoices(activeScanner) {
 }
 
 function acceptDecodedText(decodedText, activeScanner, activeSession) {
+  const studentId = normalizeStudentId(decodedText);
   if (!decodedText || !running || hasResult || activeScanner?.getState() !== 2
-    || scanner !== activeScanner || sessionId !== activeSession) return;
+    || scanner !== activeScanner || sessionId !== activeSession || !studentId) return;
 
   hasResult = true;
-  elements.result.textContent = decodedText;
+  elements.result.textContent = studentId;
   elements.resultCard.hidden = false;
   stopBarcodeGuideTracking();
   stopGuidedZoomScanning();
@@ -673,7 +650,7 @@ function acceptDecodedText(decodedText, activeScanner, activeSession) {
     elements.pausedScanButton.hidden = false;
     setControls();
     setStatus("Code 128 detected. Camera paused; scan again to resume.", "success");
-    window.alert(`Code 128 detected:\n\n${decodedText}`);
+    window.alert(`Student ID detected:\n\n${studentId}`);
   } catch (error) {
     elements.again.hidden = true;
     elements.pausedScanButton.hidden = true;
@@ -737,7 +714,6 @@ async function startCamera() {
   stopRequested = false;
   starting = true;
   hasResult = false;
-  decoderVotes = new Map();
   elements.pausedScanButton.hidden = true;
   elements.resultCard.hidden = true;
   elements.result.textContent = "";
@@ -788,8 +764,8 @@ async function startCamera() {
     startGuidedZoomScanning(activeScanner, currentSession);
     setControls();
     setStatus(nativeDetectorStatus === "ready"
-      ? "Scanning each center frame with html5-qrcode, ZBar, and native detection. Two engines must agree, or one must repeat the same value in 3 frames."
-      : "Scanning each center frame with html5-qrcode and ZBar. Native Code 128 detection is unavailable in this browser.", "scanning");
+      ? "Scanning with html5-qrcode, ZBar, and native detection. The first result matching the RVCE student ID format is returned."
+      : "Scanning with html5-qrcode and ZBar. Native Code 128 detection is unavailable in this browser; the first valid-format ID is returned.", "scanning");
   } catch (error) {
     await activeScanner.stop();
     starting = false;
@@ -809,7 +785,6 @@ async function scanAgain() {
       await resetCameraZoom();
       await scanner.resume();
       hasResult = false;
-      decoderVotes = new Map();
       showFixedCenterGuide();
       startCenterPatternTracking(scanner);
       startGuidedZoomScanning(scanner, sessionId);
@@ -818,8 +793,8 @@ async function scanAgain() {
       elements.result.textContent = "";
       setControls();
       setStatus(nativeDetectorStatus === "ready"
-        ? "Scanning with html5-qrcode, ZBar, and native detection; engines confirm results across frames."
-        : "Scanning with html5-qrcode and ZBar; native Code 128 detection is unavailable here.", "scanning");
+        ? "Scanning with all three decoders. Waiting for a value matching the RVCE student ID format."
+        : "Scanning with html5-qrcode and ZBar. Waiting for a value matching the RVCE student ID format.", "scanning");
     } catch (error) {
       setStatus(error?.message || "Could not resume the camera. Press Start camera to retry.", "error");
     }
